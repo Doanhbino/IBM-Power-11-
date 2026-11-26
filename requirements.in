@@ -5,5 +5,4 @@ onnx
 onnxruntime
 # camera: opencv-python OR a separately approved compatible system OpenCV binding
 # accuracy: pycocotools
-# training/export: rfdetr[train,onnx] with matching torch+torchvision
 # NVIDIA environment: use onnxruntime-gpu IN PLACE OF onnxruntime

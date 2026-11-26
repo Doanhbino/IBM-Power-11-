@@ -1,5 +1,0 @@
-# Candidate dependency specification; use IBM-supported torch/torchvision provenance.
-# This is not a ppc64le lock or a promise that every package has a compatible wheel.
-rfdetr[train,onnx]
-pycocotools
-PyYAML

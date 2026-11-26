@@ -1,6 +1,6 @@
 # Core C++ và quy trình chạy trên server
 
-Core nằm trong `core/`, dùng C++17. Python giữ nhiệm vụ điều phối thí nghiệm, hashing, training/export và tổng hợp báo cáo. Không có dependency ML trong thư viện `rfdetr_core` portable.
+Core nằm trong `core/`, dùng C++17. Python giữ nhiệm vụ điều phối thí nghiệm, hashing và tổng hợp báo cáo. Không có dependency ML trong thư viện `rfdetr_core` portable.
 
 ## Thành phần đã triển khai
 
@@ -89,9 +89,9 @@ python scripts/gemm_sweep.py --binary build/rfdetr_gemm --shapes runs/gemm-shape
   --output runs/gemm-ab --backends reference mma --repeats 3
 ```
 
-`profile_ops.py --format torch` đọc trace từ `training_probe.py --profile`. Nó trích MatMul/mm/bmm/addmm/linear khi đủ shape, không đoán transpose của fused node. Với ORT, `--model` phải là optimized graph của chính session; nó khôi phục shape initializer bị prepack bỏ khỏi trace theo tên node duy nhất. Node thiếu tên hoặc không khớp không được đoán. Profile chỉ có logical dimensions; microbenchmark đo từng matrix, chưa mô phỏng batch/broadcast/layout/stride nguyên gốc. Timer ghi riêng B packing và phần A packing+kernel+copy; không gọi phần sau là kernel-only.
+`profile_ops.py` trích MatMul/mm/bmm/addmm/linear khi đủ shape, không đoán transpose của fused node. Với ORT, `--model` phải là optimized graph của chính session; nó khôi phục shape initializer bị prepack bỏ khỏi trace theo tên node duy nhất. Node thiếu tên hoặc không khớp không được đoán. Profile chỉ có logical dimensions; microbenchmark đo từng matrix, chưa mô phỏng batch/broadcast/layout/stride nguyên gốc. Timer ghi riêng B packing và phần A packing+kernel+copy; không gọi phần sau là kernel-only.
 
-Sao chép `configs/mma-evidence.template.json`, điền **bằng chứng thật**. Dossier có inventory HWCAP2, revision/compiler/flags/build log, hash runtime binaries, profiled run, operator profile, và sampled stacks chứa symbol kernel; reviewer phải giải thích mapping node → kernel → instruction/dispatch. Training cần cả forward và backward độc lập. Dùng symbolized trace từ công cụ có quyền trên server; xác minh PMU events trên chính máy trước khi diễn giải.
+Sao chép `configs/mma-evidence.template.json`, điền **bằng chứng thật**. Dossier có inventory HWCAP2, revision/compiler/flags/build log, hash runtime binaries, profiled run, operator profile, và sampled stacks chứa symbol kernel; reviewer phải giải thích mapping node → kernel → instruction/dispatch. Dùng symbolized trace từ công cụ có quyền trên server; xác minh PMU events trên chính máy trước khi diễn giải.
 
 ```bash
 python scripts/mma_evidence.py --evidence runs/evidence/inference.json \
@@ -100,13 +100,13 @@ python scripts/mma_evidence.py --evidence runs/evidence/inference.json \
 
 Gate kiểm hash, Run ID, workload, model, inventory, profile gắn với run và symbol có trong trace. Gate kiểm **tính nhất quán của hồ sơ đã được người có chuyên môn review**, không tự đọc ngữ nghĩa assembly để chứng minh MMA. Không dùng kernel chứa sẵn trong binary hoặc `CPUExecutionProvider` làm bằng chứng thực thi.
 
-Để bắt buộc hồ sơ khi benchmark/train, thêm vào config:
+Để bắt buộc hồ sơ khi benchmark, thêm vào config:
 
 ```json
 {"require_mma": true, "mma_evidence": "runs/evidence/inference.json"}
 ```
 
-Config training dùng dossier `workload=training` riêng với hash checkpoint khởi tạo; không dùng hash ONNX thay thế. Hồ sơ Python ORT phải bao phủ tập `runtime_binaries` mà harness đã ghi; bổ sung các thư viện backend thực liên kết vào `stack.binaries` và lưu linkage/trace trong hồ sơ. Với ONNX external data, sao chép cả `model_files` từ run manifest vào dossier để khóa tensor ngoài graph. Hồ sơ C++ camera gắn với shared library ORT thực load. Khi đổi binary/model, thu và review hồ sơ mới.
+Hồ sơ Python ORT phải bao phủ tập `runtime_binaries` mà harness đã ghi; bổ sung các thư viện backend thực liên kết vào `stack.binaries` và lưu linkage/trace trong hồ sơ. Với ONNX external data, sao chép cả `model_files` từ run manifest vào dossier để khóa tensor ngoài graph. Hồ sơ C++ camera gắn với shared library ORT thực load. Khi đổi binary/model, thu và review hồ sơ mới.
 
 ## A/B và nghiệm thu trên server
 

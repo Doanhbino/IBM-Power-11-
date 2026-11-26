@@ -2,7 +2,7 @@
 
 **Core C++ đã được bổ sung**: preprocessing/decoder RF-DETR, queue camera hữu hạn, worker ORT, CPU/NUMA placement, GEMM FP32 reference và kernel MMA thử nghiệm, run/evidence gate và A/B. Xem [hướng dẫn core và build trên server](docs/CORE.md) cùng [kế hoạch triển khai](docs/POWER11_PLAN.md). Dùng `bash scripts/build_core.sh portable build` để kiểm core trên máy phát triển; `power-camera` để build trên server với SDK ORT/OpenCV đã chọn. Kernel riêng chưa được tích hợp vào ORT/PyTorch; đường RF-DETR tiếp tục dùng backend thư viện đã kiểm chứng.
 
-Bộ harness có thể mang lên server để kiểm chứng **training → export → accuracy → inference → camera → thread/NUMA/multi-worker → báo cáo**. Đường chuẩn là **CPU FP32 / ONNX Runtime CPUExecutionProvider / MLAS**. Spyre PCIe có cổng kiểm chứng riêng; chưa có adapter RF-DETR/Spyre được xác nhận. Bộ này chưa được chạy trên Power11 của bạn, không chứa số FPS dự đoán.
+Bộ harness có thể mang lên server để kiểm chứng, với model ONNX RF-DETR đã có sẵn (repo không train/export), **accuracy → inference → camera → thread/NUMA/multi-worker → báo cáo**. Đường chuẩn là **CPU FP32 / ONNX Runtime CPUExecutionProvider / MLAS**. Spyre PCIe có cổng kiểm chứng riêng; chưa có adapter RF-DETR/Spyre được xác nhận. Bộ này chưa được chạy trên Power11 của bạn, không chứa số FPS dự đoán.
 
 Ngày đối chiếu: **25/11/2026**. Máy mục tiêu theo yêu cầu: RHEL 9.8 ppc64le, PowerVM, 240 logical CPU ở SMT8, 4 NUMA, RAM 954 GiB, `/home/models` 745G. 240 logical CPU không đồng nghĩa 240 core, và cũng không xác định entitlement của shared LPAR. Chưa lấy được ảnh/đầu ra cấu hình gốc từ chat cũ; xem [chứng cứ và phần còn thiếu](docs/EVIDENCE.md).
 
@@ -18,7 +18,7 @@ python3 scripts/inventory.py --output runs/preflight/inventory.json
 
 Đọc inventory trước: kiến trúc/OS, cpuset/cgroup, CPU→core→sibling→NUMA, RAM/disk, lparstat/entitlement và PCI/driver. Thiếu lệnh hay quyền đọc được ghi là thiếu. Spyre chỉ được xác nhận sau khi định danh PCIe + driver + vendor runtime health, không suy từ tên Power11. Xem [hướng dẫn hệ thống](docs/SYSTEM.md).
 
-Tách venv CPU inference, training/export và NVIDIA đối chứng. **requirements.in chỉ là danh sách, chưa là lock ppc64le đã được thử.** Dùng Python 3.11/3.12 đã có trên máy theo nguồn IBM phù hợp. Kiểm từng wheel/version/Python ABI; không mặc định `pip install torch` hay `onnxruntime` có wheel ppc64le.
+Tách venv CPU inference và NVIDIA đối chứng. **requirements.in chỉ là danh sách, chưa là lock ppc64le đã được thử.** Dùng Python 3.11/3.12 đã có trên máy theo nguồn IBM phù hợp. Kiểm từng wheel/version/Python ABI; không mặc định `pip install torch` hay `onnxruntime` có wheel ppc64le.
 
 Quy trình binary ưu tiên: tạo thư mục wheelhouse rỗng, resolve/download từ index đã chọn, lưu log nguồn; review wheel rồi sinh lock/hash; cài offline trong venv mới. Ví dụ dưới kiểm PyPI cho inference; nếu thiếu binary, dừng và đọc [support](docs/SUPPORT.md), [source build ORT](docs/BUILD_ORT.md), không tự build dependency hoặc thay toolchain hệ thống.
 
@@ -35,31 +35,15 @@ python -m pip check
 python -m unittest discover -s tests -v
 ```
 
-Các test tích hợp cần thêm OpenCV và `pycocotools`; resolve `requirements.camera.in` thay cho `requirements.in`, rồi tạo lock đầy đủ trước khi chạy. `requirements.training.in` là đặc tả ứng viên cho training/export; chưa là bộ package được chứng nhận trên Power. Nếu chỉ cần model-only, chúng không phải dependency của `benchmark.py`. Không cài đồng thời `onnxruntime` và `onnxruntime-gpu` vào cùng venv. `wheel_lock.py` chỉ cần Python chuẩn; hash không thay thế kiểm provenance/compatibility.
+Các test tích hợp cần thêm OpenCV và `pycocotools`; resolve `requirements.camera.in` thay cho `requirements.in`, rồi tạo lock đầy đủ trước khi chạy. Nếu chỉ cần model-only, OpenCV và `pycocotools` không phải dependency của `benchmark.py`. Không cài đồng thời `onnxruntime` và `onnxruntime-gpu` vào cùng venv. `wheel_lock.py` chỉ cần Python chuẩn; hash không thay thế kiểm provenance/compatibility.
 
-IBM wheel index có tài liệu riêng; cần xác nhận đúng package/version/ABI, không ghép nhiều index không kiểm soát. Nếu wheel training thiếu, dùng build/package được IBM hỗ trợ hoặc xây có kiểm thử trong môi trường riêng. Đường đối chứng NVIDIA vẫn dùng cùng checkpoint/data và xuất ONNX để đưa sang Power; không coi điều đó là đã benchmark training trên Power.
+IBM wheel index có tài liệu riêng; cần xác nhận đúng package/version/ABI, không ghép nhiều index không kiểm soát. Model ONNX được tạo ở nơi khác (ví dụ máy GPU) rồi đưa sang Power; repo này không benchmark training.
 
-## Hai điểm xuất phát
+## Điểm xuất phát
 
-**Đã có ONNX RF-DETR:** kiểm tên/shape/dtype bằng ONNX, đi thẳng vào model-only rồi camera. `configs/cpu.json` và `camera.json` mặc định 640×640 để phù hợp model Small 7 lớp cục bộ đã kiểm checker. Mẫu background=-1 là giả định cho custom contiguous-ID, cần xác nhận checkpoint. Mapping class phải thiết lập theo dataset, không suy từ tên “7cls”.
+**Cần có model ONNX RF-DETR** (repo không train/export; tạo model ở nơi khác): kiểm tên/shape/dtype bằng ONNX, đi thẳng vào model-only rồi camera. `configs/cpu.json` và `camera.json` mặc định 640×640 để phù hợp model Small 7 lớp cục bộ đã kiểm checker. Mẫu background=-1 là giả định cho custom contiguous-ID, cần xác nhận checkpoint. Mapping class phải thiết lập theo dataset, không suy từ tên “7cls”.
 
-**Cần fine-tune:** dùng `configs/train-cpu-smoke.json`, sau đó `train-cpu.json`; chạy đối chứng `train-rtx3060-fp32.json` trên máy GPU. Các mẫu bắt đầu Nano 384×384 để smoke training, không thay model Small đang dùng trong so sánh chính. Chốt một variant/shape/checkpoint cho từng cặp so sánh. [Training/export/accuracy chi tiết](docs/TRAINING.md).
-
-**Dataset giao thông YOLO `.txt`:** dùng `configs/train-traffic-smoke.json` (Small 512, 1 epoch), sau đó `configs/train-traffic-cpu.json`. Sửa `dataset_dir` tới thư mục chứa `data.yaml`/`data.yml`, giữ `dataset_file="yolo"`. Wrapper hỗ trợ đọc YOLO trực tiếp và kiểm class ID/box/path trước khi import torch; bước `--check-only` cần thêm PyYAML. Xem cấu trúc và giới hạn validator trong [hướng dẫn training](docs/TRAINING.md).
-
-```bash
-# Trong venv training đã kiểm torch, torchvision và rfdetr[train,onnx]. Sửa đường dẫn local trước.
-python scripts/train.py --config configs/train-cpu-smoke.json --check-only
-python scripts/train.py --config configs/train-cpu-smoke.json
-python scripts/train.py --config configs/train-cpu.json
-python scripts/export_model.py --config configs/export-nano.json
-# Dùng đường dẫn artifact THỰC trong export_manifest.json; tên có thể khác giữa RF-DETR release.
-python scripts/validate_onnx.py --model /home/models/runs/export-nano-fp32/inference_model.onnx --reference /home/models/runs/export-nano-fp32/eager_reference.npz --output runs/parity.json
-```
-
-`export-nano.json` là 384×384; nếu dùng output đó phải sửa **size/model ở mọi config inference/accuracy** về 384. Không chạy camera 640 với export 384. Export validator so cùng tensor với eager PyTorch, không tự lấy ORT làm reference. `expected_versions` ban đầu rỗng: điền phiên bản đã qua smoke test để chặn thay đổi môi trường giữa chiến dịch.
-
-Để đo batch/epoch và capture operator khi training, dùng [TRAINING_PROBE.md](docs/TRAINING_PROBE.md). Đây là lượt instrumentation riêng, không thay số train wall tự nhiên.
+Đối chiếu số học ONNX với PyTorch eager (tùy chọn) và đo accuracy COCO được mô tả trong [ACCURACY.md](docs/ACCURACY.md). Size trong mọi config inference/accuracy phải khớp với shape đã export (ví dụ không chạy camera 640 với model export 384).
 
 ## Benchmark model-only và camera
 
@@ -107,7 +91,7 @@ python scripts/accuracy_gate.py --help
 
 Không dùng WIDER FACE AP của YOLO làm COCO AP RF-DETR. FP32 numerical parity và mAP/recall trên test set bất biến là hai gate riêng. Lưu category mapping, image IDs, annotation/image hash, seed và precision. [Nghiệm thu và thiết kế nghiên cứu](docs/RESEARCH.md).
 
-Có thể sinh reference độc lập bằng `scripts/predict_eager.py` trong venv training; dùng `--help` và xem [TRAINING.md](docs/TRAINING.md). Phải xác nhận resolution/num_select/mapping của checkpoint cùng cấu hình ONNX.
+Reference eager (nếu cần) phải được sinh độc lập ở nơi khác; xem [ACCURACY.md](docs/ACCURACY.md). Phải xác nhận resolution/num_select/mapping của checkpoint cùng cấu hình ONNX.
 
 ## RTX 3060 và bước tối ưu tiếp theo
 

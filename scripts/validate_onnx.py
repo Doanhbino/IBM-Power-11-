@@ -9,7 +9,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--model', required=True)
     ap.add_argument('--backend-config', help='Optional CPU/ORT-TRT/native TRT config; model path must agree')
-    ap.add_argument('--reference', required=True, help='NPZ from export_model.py; never an ORT-generated reference')
+    ap.add_argument('--reference', required=True, help='NPZ of FP32 reference tensors from an independent PyTorch eager run; never an ORT-generated reference')
     ap.add_argument('--output', default='runs/validation.json')
     ap.add_argument('--atol', type=float, default=1e-4)
     ap.add_argument('--rtol', type=float, default=1e-3)
