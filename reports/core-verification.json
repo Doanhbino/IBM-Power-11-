@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-25",
+  "machine": "x86_64",
+  "python": "3.12.3",
+  "portable_release_build": "passed",
+  "ctest": "passed",
+  "python_tests": 29,
+  "python_tests_status": "passed",
+  "asan_ubsan": "passed; leak detection disabled because ptrace prevents LSan",
+  "camera_translation_units": "OpenCV 4.6 syntax-only passed; no ORT SDK link/runtime test",
+  "mma_instruction_execution": "not run: development host is x86_64",
+  "training_export_power11_rtx_camera_soak": "pending target server and real artifacts",
+  "custom_mma_kernel_in_ort_or_torch": false
+}

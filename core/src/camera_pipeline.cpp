@@ -1,0 +1,259 @@
+#include "rfdetr/bounded_queue.hpp"
+#include "rfdetr/camera.hpp"
+#include "rfdetr/decoder.hpp"
+#include "rfdetr/ort_session.hpp"
+#include "rfdetr/placement.hpp"
+#include "rfdetr/preprocess.hpp"
+#include <opencv2/core.hpp>
+#include <opencv2/videoio.hpp>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <csignal>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+namespace {
+using Clock = std::chrono::steady_clock;
+double ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
+double stamp(Clock::time_point t) { return std::chrono::duration<double>(t.time_since_epoch()).count(); }
+
+int integer(const cv::FileNode& node, const char* key, int fallback, int minimum = 0) {
+    const auto value = node[key];
+    if (value.empty()) return fallback;
+    if (!value.isInt()) throw std::invalid_argument(std::string("Expected integer: ") + key);
+    const int result = static_cast<int>(value);
+    if (result < minimum) throw std::invalid_argument(std::string("Invalid range: ") + key);
+    return result;
+}
+std::string text(const cv::FileNode& node, const char* key) {
+    if (!node[key].isString()) throw std::invalid_argument(std::string("Expected string: ") + key);
+    return static_cast<std::string>(node[key]);
+}
+
+struct Frame {
+    cv::Mat image;
+    std::size_t id;
+    Clock::time_point read_begin, received;
+    double pts_ms;
+};
+struct Camera {
+    std::string id, source;
+    rfdetr::BoundedQueue<Frame> queue;
+    std::thread capture;
+    std::atomic<std::size_t> received{0}, errors{0}, reconnects{0};
+    std::size_t processed{0}, expired{0};
+    Camera(std::string name, std::string path, std::size_t capacity, bool live)
+        : id(std::move(name)), source(std::move(path)),
+          queue(capacity, live ? rfdetr::QueuePolicy::drop_oldest : rfdetr::QueuePolicy::block) {}
+    ~Camera() { queue.cancel(); if (capture.joinable()) capture.join(); }
+};
+
+}  // namespace
+
+int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
+                              const std::atomic<bool>& interrupted) {
+    cv::FileStorage file(config_path.string(), cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
+    if (!file.isOpened()) throw std::runtime_error("Cannot read worker configuration");
+    const auto cfg = file.root();
+    if (!cfg["cpus"].empty()) {
+        std::vector<int> cpus;
+        for (const auto& cpu : cfg["cpus"]) cpus.push_back(static_cast<int>(cpu));
+        rfdetr::bind_cpus(cpus);
+    }
+    if (!cfg["numa_node"].empty()) rfdetr::bind_memory(integer(cfg, "numa_node", 0));
+    const auto mode = text(cfg, "mode");
+    if (mode != "replay" && mode != "live") throw std::invalid_argument("mode must be replay or live");
+    const bool live = mode == "live";
+    const auto out = std::filesystem::path(text(cfg, "output"));
+    if (!std::filesystem::create_directory(out)) throw std::runtime_error("Output directory must be new");
+    const int height = integer(cfg, "height", 0, 1), width = integer(cfg, "width", 0, 1);
+    const int threads = integer(cfg, "threads", 1, 1);
+    if (static_cast<std::size_t>(threads) > rfdetr::allowed_cpus().size())
+        throw std::invalid_argument("ORT threads exceed effective CPU mask");
+    cv::setNumThreads(1);
+    rfdetr::Normalization normalization;
+    for (const auto key : {"mean", "std"}) if (!cfg[key].empty()) {
+        if (!cfg[key].isSeq() || cfg[key].size() != 3) throw std::invalid_argument("Expected 3 normalization values");
+        auto& values = std::string(key) == "mean" ? normalization.mean : normalization.std;
+        for (int i = 0; i < 3; ++i) values[i] = static_cast<float>(cfg[key][i]);
+    }
+    rfdetr::Preprocessor preprocessor(height, width, normalization);
+    rfdetr::DecodeConfig decode;
+    if (cfg["background_index"].isInt()) decode.background_index = static_cast<int>(cfg["background_index"]);
+    else if (!cfg["background_index"].isString() || text(cfg, "background_index") != "none")
+        throw std::invalid_argument("Set background_index explicitly to integer or string none");
+    decode.top_k = integer(cfg, "top_k", 300, 1);
+    if (!cfg["threshold"].empty()) decode.threshold = static_cast<float>(cfg["threshold"]);
+    rfdetr::Decoder decoder(decode);
+    const bool profiling = integer(cfg, "profile", 0) == 1;
+    const auto init_start = Clock::now();
+    rfdetr::OrtSession session({text(cfg, "model"), text(cfg, "input_name"), text(cfg, "boxes_output"),
+        text(cfg, "logits_output"), profiling ? (out / "ort").string() : "", height, width, threads});
+    const double init_ms = ms(Clock::now() - init_start);
+    cv::Mat black(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
+    const auto& tensor = preprocessor.run({black.data, black.rows, black.cols, black.step});
+    const auto warm_start = Clock::now();
+    for (int i = 0; i < integer(cfg, "warmup", 10); ++i) session.run(tensor.data(), tensor.size());
+    const double warmup_ms = ms(Clock::now() - warm_start);
+    const int capacity = integer(cfg, "queue_capacity", 2, 1);
+    const int timeout = integer(cfg, "capture_timeout_ms", 5000, 1);
+    const int retry_limit = integer(cfg, "reconnect_attempts", 3);
+    const int retry_delay = integer(cfg, "reconnect_delay_ms", 1000);
+    const int max_frames = integer(cfg, "max_frames_per_camera", 0);
+    const double duration = cfg["duration_s"].empty() ? 0.0 : static_cast<double>(cfg["duration_s"]);
+    const double max_age = cfg["max_frame_age_ms"].empty() ? 0.0 : static_cast<double>(cfg["max_frame_age_ms"]);
+    if (!std::isfinite(duration) || duration < 0 || !std::isfinite(max_age) || max_age < 0 ||
+        (live && duration <= 0)) throw std::invalid_argument("Live mode requires positive duration_s; invalid duration/age");
+    if (!live && max_age > 0) throw std::invalid_argument("Replay must preserve frames; disable max_frame_age_ms");
+    std::vector<std::unique_ptr<Camera>> cameras;
+    for (const auto& source : cfg["sources"]) {
+        const auto id = text(source, "id");
+        if (id.empty() || id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") != std::string::npos)
+            throw std::invalid_argument("Camera ID must be a safe identifier");
+        for (const auto& camera : cameras) if (camera->id == id) throw std::invalid_argument("Duplicate camera ID");
+        cameras.push_back(std::make_unique<Camera>(id, text(source, "source"), capacity, live));
+    }
+    if (cameras.empty()) throw std::invalid_argument("No cameras configured");
+    std::ofstream samples(out / "samples.csv"), detections(out / "detections.jsonl");
+    if (!samples || !detections) throw std::runtime_error("Cannot open output streams");
+    samples << "camera_id,frame_id,source_pts_ms,received_monotonic_s,completed_monotonic_s,capture_ms,queue_age_ms,preprocess_ms,inference_ms,postprocess_ms,receive_to_result_ms,read_to_result_ms,detections\n";
+    samples << std::setprecision(12); detections << std::setprecision(9);
+    std::atomic<bool> stop{false}, failed{false};
+    std::mutex wake_mutex;
+    std::condition_variable wake;
+    std::size_t generation = 0;
+    const auto started = Clock::now();
+    const auto notify = [&] { std::lock_guard<std::mutex> lock(wake_mutex); ++generation; wake.notify_one(); };
+    const auto cancelled = [&] { return stop.load() || interrupted ||
+        (duration > 0 && ms(Clock::now() - started) >= duration * 1000.0); };
+    auto finish = [&] {
+        stop = true;
+        for (auto& camera : cameras) camera->queue.cancel();
+        for (auto& camera : cameras) if (camera->capture.joinable()) camera->capture.join();
+    };
+    Clock::time_point last_completed = started;
+    try {
+        for (auto& camera : cameras) camera->capture = std::thread([&, camera = camera.get()] {
+            try {
+                cv::VideoCapture capture;
+                int retries = 0;
+                while (!cancelled()) {
+                    if (!capture.isOpened()) {
+                        const bool remote = camera->source.find("://") != std::string::npos;
+                        const bool opened = remote ? capture.open(camera->source, cv::CAP_FFMPEG,
+                            {cv::CAP_PROP_OPEN_TIMEOUT_MSEC, timeout, cv::CAP_PROP_READ_TIMEOUT_MSEC, timeout})
+                            : capture.open(camera->source);
+                        if (!opened) {
+                            ++camera->errors;
+                            if (!live || retries++ >= retry_limit) { failed = true; break; }
+                        }
+                    }
+                    if (capture.isOpened()) {
+                        cv::Mat image;
+                        const auto begin = Clock::now();
+                        const bool ok = capture.read(image);
+                        const auto received = Clock::now();
+                        if (ok && !image.empty()) {
+                            if (image.type() != CV_8UC3) throw std::runtime_error("Expected BGR uint8 decoded frame");
+                            const auto id = camera->received.fetch_add(1);
+                            const double pts = capture.get(cv::CAP_PROP_POS_MSEC);
+                            if (!camera->queue.push({std::move(image), id, begin, received, std::isfinite(pts) ? pts : 0.0})) break;
+                            notify();
+                            retries = 0;
+                            if (max_frames > 0 && camera->received >= static_cast<std::size_t>(max_frames)) break;
+                            continue;
+                        }
+                        if (!live) break; // Replay EOF. Backend cannot distinguish corrupt EOF; validate frame IDs externally.
+                        ++camera->errors;
+                        capture.release();
+                        if (retries++ >= retry_limit) { failed = true; break; }
+                    }
+                    ++camera->reconnects;
+                    for (int elapsed = 0; elapsed < retry_delay && !cancelled(); elapsed += 20)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(20, retry_delay - elapsed)));
+                }
+                capture.release();
+            } catch (...) { ++camera->errors; failed = true; }
+            camera->queue.close(); notify();
+        });
+        std::size_t next = 0;
+        while (!interrupted && !failed) {
+            std::size_t observed;
+            { std::lock_guard<std::mutex> lock(wake_mutex); observed = generation; }
+            if (duration > 0 && ms(Clock::now() - started) >= duration * 1000.0) break;
+            bool progressed = false, done = true;
+            for (std::size_t offset = 0; offset < cameras.size(); ++offset) {
+                const auto index = (next + offset) % cameras.size();
+                auto& camera = *cameras[index];
+                auto frame = camera.queue.try_pop();
+                const auto state = camera.queue.stats();
+                done = done && state.closed && state.pending == 0 && !frame;
+                if (!frame) continue;
+                progressed = true; next = (index + 1) % cameras.size();
+                const auto begin = Clock::now();
+                const double age = ms(begin - frame->received);
+                if (max_age > 0 && age > max_age) { ++camera.expired; break; }
+                const auto& data = preprocessor.run({frame->image.data, frame->image.rows, frame->image.cols, frame->image.step});
+                const auto pre_end = Clock::now();
+                const auto output = session.run(data.data(), data.size());
+                const auto inf_end = Clock::now();
+                const auto& decoded = decoder.run(output.boxes, output.logits, output.queries, output.classes,
+                    frame->image.rows, frame->image.cols);
+                const auto end = Clock::now(); last_completed = end;
+                ++camera.processed;
+                samples << camera.id << ',' << frame->id << ',' << frame->pts_ms << ',' << stamp(frame->received) << ',' << stamp(end)
+                    << ',' << ms(frame->received - frame->read_begin) << ',' << age << ',' << ms(pre_end - begin)
+                    << ',' << ms(inf_end - pre_end) << ',' << ms(end - inf_end) << ',' << ms(end - frame->received)
+                    << ',' << ms(end - frame->read_begin) << ',' << decoded.size() << '\n';
+                detections << "{\"camera_id\":\"" << camera.id << "\",\"frame_id\":" << frame->id << ",\"detections\":[";
+                for (std::size_t i = 0; i < decoded.size(); ++i) {
+                    const auto& detection = decoded[i];
+                    if (i) detections << ',';
+                    detections << "{\"xyxy\":[" << detection.xyxy[0] << ',' << detection.xyxy[1] << ',' << detection.xyxy[2]
+                        << ',' << detection.xyxy[3] << "],\"score\":" << detection.score << ",\"class_slot\":" << detection.class_slot << '}';
+                }
+                detections << "]}\n";
+                if (!samples || !detections) throw std::runtime_error("Output write failed");
+                break; // One frame per scheduling turn; round-robin fairness.
+            }
+            if (done) break;
+            if (!progressed) {
+                std::unique_lock<std::mutex> lock(wake_mutex);
+                wake.wait_for(lock, std::chrono::milliseconds(20), [&] { return generation != observed; });
+            }
+        }
+        finish();
+    } catch (...) { finish(); throw; }
+    samples.close(); detections.close();
+    if (!samples || !detections) throw std::runtime_error("Output flush failed");
+    const double active_s = std::chrono::duration<double>(last_completed - started).count();
+    cv::FileStorage result((out / "result.json").string(), cv::FileStorage::WRITE | cv::FileStorage::FORMAT_JSON);
+    result << "schema_version" << 1 << "status" << (failed ? "failed" : interrupted ? "interrupted" : "ok")
+        << "backend" << "ORT CPU / linked MLAS; MMA usage requires independent hot-path evidence"
+        << "ort_version" << rfdetr::OrtSession::version() << "runtime_library" << rfdetr::OrtSession::library_path()
+        << "session_init_ms" << init_ms
+        << "warmup_ms" << warmup_ms << "profile_instrumented" << static_cast<int>(profiling)
+        << "active_start_monotonic_s" << stamp(started) << "active_end_monotonic_s" << stamp(last_completed)
+        << "active_elapsed_s" << active_s << "shutdown_ms" << ms(Clock::now() - last_completed)
+        << "profile_path" << session.end_profile() << "cameras" << "[";
+    std::size_t processed = 0;
+    for (const auto& camera : cameras) {
+        const auto state = camera->queue.stats();
+        processed += camera->processed;
+        result << "{" << "id" << camera->id << "received" << static_cast<double>(camera->received)
+            << "processed" << static_cast<double>(camera->processed) << "queue_dropped" << static_cast<double>(state.dropped)
+            << "shutdown_rejected" << static_cast<double>(camera->received - state.accepted)
+            << "expired" << static_cast<double>(camera->expired) << "errors" << static_cast<double>(camera->errors)
+            << "reconnects" << static_cast<double>(camera->reconnects) << "high_watermark" << static_cast<int>(state.high_watermark) << "}";
+    }
+    result << "]" << "images" << static_cast<double>(processed) << "throughput_fps" << (active_s > 0 ? processed / active_s : 0.0)
+        << "timing_scope" << "capture threads start to last decoded result; warmup excluded; includes capture startup and output IO; not sensor-to-result or steady-state"
+        << "queue_age_scope" << "local monotonic time after read to preprocessing start; source PTS is not synchronized sensor time";
+    result.release();
+    return failed || processed == 0 ? 2 : interrupted ? 130 : 0;
+}

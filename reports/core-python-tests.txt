@@ -1,0 +1,35 @@
+test_half_pixel_resize (test_adapter.AdapterTests.test_half_pixel_resize) ... ok
+test_multilabel_and_background (test_adapter.AdapterTests.test_multilabel_and_background) ... ok
+test_requires_background (test_adapter.AdapterTests.test_requires_background) ... ok
+test_rgb_normalization (test_adapter.AdapterTests.test_rgb_normalization) ... ok
+test_three_classes_collision (test_adapter.AdapterTests.test_three_classes_collision) ... ok
+test_trt_initialization_fallback_rejected (test_adapter.AdapterTests.test_trt_initialization_fallback_rejected) ... [0;93m2026-11-25 21:25:13.733078570 [W:onnxruntime:Default, telemetry_1ds.cc:613 operator()] Failed to persist telemetry device ID; using an in-memory identifier[m
+ok
+test_decoder_global_topk_background_and_ties (test_core.CoreParity.test_decoder_global_topk_background_and_ties) ... ok
+test_mma_request_cannot_silently_fallback (test_core.CoreParity.test_mma_request_cannot_silently_fallback) ... ok
+test_preprocess_resize_and_padded_stride (test_core.CoreParity.test_preprocess_resize_and_padded_stride) ... ok
+test_camera_and_coco (test_harness.Harness.test_camera_and_coco) ... ok
+test_concurrent_workers (test_harness.Harness.test_concurrent_workers) ... ok
+test_external_hash (test_harness.Harness.test_external_hash) ... ok
+test_model_profile_and_report (test_harness.Harness.test_model_profile_and_report) ... ok
+test_parity_pass_and_failure (test_harness.Harness.test_parity_pass_and_failure) ... ok
+test_real_profile_shapes_to_cpp_microbenchmark (test_harness.Harness.test_real_profile_shapes_to_cpp_microbenchmark) ... ok
+test_generated_workers_use_observed_nodes_and_disjoint_cpus (test_run_evidence.CameraPlacement.test_generated_workers_use_observed_nodes_and_disjoint_cpus) ... ok
+test_irregular_topology_and_background (test_run_evidence.CameraPlacement.test_irregular_topology_and_background) ... ok
+test_overlapping_foreign_cpu_and_cross_node_rejected (test_run_evidence.CameraPlacement.test_overlapping_foreign_cpu_and_cross_node_rejected) ... ok
+test_repeats_and_workload_gates (test_run_evidence.Comparison.test_repeats_and_workload_gates) ... ok
+test_capability_claim_must_match_inventory (test_run_evidence.Evidence.test_capability_claim_must_match_inventory) ... ok
+test_consistent_dossier_and_tampered_artifact (test_run_evidence.Evidence.test_consistent_dossier_and_tampered_artifact) ... ok
+test_runtime_model_and_symbol_binding (test_run_evidence.Evidence.test_runtime_model_and_symbol_binding) ... ok
+test_training_cannot_reuse_inference_evidence (test_run_evidence.Evidence.test_training_cannot_reuse_inference_evidence) ... ok
+test_ort_shape_groups_and_unknown_fused_attributes (test_run_evidence.Profiles.test_ort_shape_groups_and_unknown_fused_attributes) ... ok
+test_torch_linear_transpose (test_run_evidence.Profiles.test_torch_linear_transpose) ... ok
+test_atomic_write_and_recursive_redaction (test_run_evidence.Records.test_atomic_write_and_recursive_redaction) ... ok
+test_cpu_range_parse (test_topology.TopologyTests.test_cpu_range_parse) ... ok
+test_irregular_cpuset_no_invented_cpu (test_topology.TopologyTests.test_irregular_cpuset_no_invented_cpu) ... ok
+test_one_sibling_per_core (test_topology.TopologyTests.test_one_sibling_per_core) ... ok
+
+----------------------------------------------------------------------
+Ran 29 tests in 2.168s
+
+OK

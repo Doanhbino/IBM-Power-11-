@@ -1,0 +1,34 @@
+{
+  "model": "models/rfdetr.onnx",
+  "input_npz": "data/input.npz",
+  "mode": "camera",
+  "backend": "cpu",
+  "threads": 1,
+  "inter_threads": 1,
+  "spinning": false,
+  "warmup": 30,
+  "iterations": 1000,
+  "seed": 42,
+  "size": [
+    640,
+    640
+  ],
+  "mean": [
+    0.485,
+    0.456,
+    0.406
+  ],
+  "std": [
+    0.229,
+    0.224,
+    0.225
+  ],
+  "boxes_output": "dets",
+  "logits_output": "labels",
+  "background_index": -1,
+  "top_k": 300,
+  "threshold": 0.25,
+  "source": "data/camera-replay.mp4",
+  "opencv_threads": 1,
+  "capture_timeout_ms": 5000
+}

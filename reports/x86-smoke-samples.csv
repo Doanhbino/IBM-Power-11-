@@ -1,0 +1,4 @@
+capture_ms,preprocess_ms,inference_ms,postprocess_ms,total_ms,frame_index,source_pts_ms,images,detections,iteration
+0.0,0.0,544.06684,0.00082,544.08558,,,1,0,0
+0.0,0.0,541.097151,0.000811,541.115749,,,1,0,1
+0.0,0.0,563.755935,0.000745,563.774033,,,1,0,2

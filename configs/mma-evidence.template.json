@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "workload": "inference",
+  "run_id": "REPLACE_WITH_PROFILE_RUN_ID",
+  "model_sha256": "REPLACE_WITH_MODEL_OR_INITIAL_CHECKPOINT_HASH",
+  "model_files": [],
+  "reviewer": "",
+  "reviewed_utc": "",
+  "capability": {
+    "machine": "ppc64le",
+    "hwcap2_mma": false,
+    "inventory": {"path": "inventory.json", "sha256": ""}
+  },
+  "stack": {
+    "revision": "",
+    "compiler": "",
+    "flags": [],
+    "build_log": {"path": "build.log", "sha256": ""},
+    "binaries": [{"path": "libonnxruntime.so", "sha256": ""}]
+  },
+  "run": {"path": "profile-run/result.json", "sha256": ""},
+  "operator_profile": {"path": "profile-run/ort.json", "sha256": ""},
+  "hotspots": [
+    {
+      "node": "",
+      "operator": "MatMul",
+      "shape": [],
+      "dtype": "float32",
+      "phase": "forward",
+      "kernel_symbol": "",
+      "mma_executed": false,
+      "sampled_stack": {"path": "perf-script.txt", "sha256": ""},
+      "interpretation": ""
+    }
+  ]
+}

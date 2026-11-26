@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /home/doanh/power11-rfdetr-baseline/build
+Test project /home/doanh/power11-rfdetr-baseline/build
+    Start 1: core_tests
+1/1 Test #1: core_tests .......................   Passed    0.02 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.02 sec

@@ -1,0 +1,20 @@
+test_half_pixel_resize (test_adapter.AdapterTests.test_half_pixel_resize) ... ok
+test_multilabel_and_background (test_adapter.AdapterTests.test_multilabel_and_background) ... ok
+test_requires_background (test_adapter.AdapterTests.test_requires_background) ... ok
+test_rgb_normalization (test_adapter.AdapterTests.test_rgb_normalization) ... ok
+test_three_classes_collision (test_adapter.AdapterTests.test_three_classes_collision) ... ok
+test_trt_initialization_fallback_rejected (test_adapter.AdapterTests.test_trt_initialization_fallback_rejected) ... [0;93m2026-11-25 20:35:54.955309240 [W:onnxruntime:Default, telemetry_1ds.cc:613 operator()] Failed to persist telemetry device ID; using an in-memory identifier[m
+ok
+test_camera_and_coco (test_harness.Harness.test_camera_and_coco) ... ok
+test_concurrent_workers (test_harness.Harness.test_concurrent_workers) ... ok
+test_external_hash (test_harness.Harness.test_external_hash) ... ok
+test_model_profile_and_report (test_harness.Harness.test_model_profile_and_report) ... ok
+test_parity_pass_and_failure (test_harness.Harness.test_parity_pass_and_failure) ... ok
+test_cpu_range_parse (test_topology.TopologyTests.test_cpu_range_parse) ... ok
+test_irregular_cpuset_no_invented_cpu (test_topology.TopologyTests.test_irregular_cpuset_no_invented_cpu) ... ok
+test_one_sibling_per_core (test_topology.TopologyTests.test_one_sibling_per_core) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 1.333s
+
+OK

@@ -1,0 +1,70 @@
+cmake_minimum_required(VERSION 3.20)
+project(power11_rfdetr VERSION 0.1.0 LANGUAGES CXX)
+
+option(POWER11_ENABLE_MMA "Compile the isolated Power ISA 3.1 MMA kernel" OFF)
+option(POWER11_BUILD_CAMERA "Build the OpenCV + ONNX Runtime camera worker" OFF)
+option(POWER11_SANITIZE "Enable address and undefined behavior sanitizers" OFF)
+set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime C/C++ distribution (include/ and lib/)")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+find_package(Threads REQUIRED)
+
+add_library(rfdetr_core
+  core/src/preprocess.cpp core/src/decoder.cpp core/src/placement.cpp core/src/gemm.cpp)
+target_include_directories(rfdetr_core PUBLIC core/include)
+target_link_libraries(rfdetr_core PUBLIC Threads::Threads)
+target_compile_options(rfdetr_core PRIVATE -Wall -Wextra -Wpedantic -ffp-contract=off)
+if(POWER11_SANITIZE)
+  target_compile_options(rfdetr_core PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(rfdetr_core PUBLIC -fsanitize=address,undefined)
+endif()
+
+if(POWER11_ENABLE_MMA)
+  if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64le|powerpc64le)$")
+    message(FATAL_ERROR "MMA kernel requires a little-endian Power target; use a toolchain file to cross-compile")
+  endif()
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS "-mcpu=power10 -mmma")
+  check_cxx_source_compiles("#include <altivec.h>
+    int main() { __vector_quad a; __vector unsigned char v{};
+      __builtin_mma_xxsetaccz(&a); __builtin_mma_xvf32gerpp(&a,v,v);
+      __vector float rows[4]; __builtin_mma_disassemble_acc(rows,&a); return 0; }"
+    POWER11_COMPILER_HAS_MMA)
+  unset(CMAKE_REQUIRED_FLAGS)
+  if(NOT POWER11_COMPILER_HAS_MMA)
+    message(FATAL_ERROR "Compiler cannot compile the required MMA intrinsics; inspect CMake configure log")
+  endif()
+  target_sources(rfdetr_core PRIVATE core/src/gemm_mma.cpp)
+  set_source_files_properties(core/src/gemm_mma.cpp PROPERTIES COMPILE_OPTIONS "-mcpu=power10;-mmma")
+  target_compile_definitions(rfdetr_core PRIVATE POWER11_HAS_MMA_KERNEL=1)
+endif()
+
+add_executable(rfdetr_gemm core/apps/gemm_bench.cpp)
+target_link_libraries(rfdetr_gemm PRIVATE rfdetr_core)
+add_executable(rfdetr_adapter core/apps/adapter.cpp)
+target_link_libraries(rfdetr_adapter PRIVATE rfdetr_core)
+
+if(POWER11_BUILD_CAMERA)
+  find_package(OpenCV 4 REQUIRED COMPONENTS core videoio)
+  find_path(ORT_INCLUDE_DIR onnxruntime_cxx_api.h HINTS "${ONNXRUNTIME_ROOT}/include"
+    "${ONNXRUNTIME_ROOT}/include/onnxruntime/core/session" REQUIRED NO_DEFAULT_PATH)
+  find_library(ORT_LIBRARY onnxruntime HINTS "${ONNXRUNTIME_ROOT}/lib" REQUIRED NO_DEFAULT_PATH)
+  add_library(rfdetr_ort core/src/ort_session.cpp)
+  target_include_directories(rfdetr_ort PRIVATE "${ORT_INCLUDE_DIR}")
+  target_link_libraries(rfdetr_ort PUBLIC rfdetr_core "${ORT_LIBRARY}" ${CMAKE_DL_LIBS})
+  add_executable(rfdetr_camera core/apps/camera.cpp core/src/camera_pipeline.cpp)
+  target_include_directories(rfdetr_camera PRIVATE ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(rfdetr_camera PRIVATE rfdetr_ort ${OpenCV_LIBS})
+  target_compile_options(rfdetr_ort PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(rfdetr_camera PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(core_tests core/tests/core_tests.cpp)
+  target_link_libraries(core_tests PRIVATE rfdetr_core)
+  add_test(NAME core_tests COMMAND core_tests)
+endif()

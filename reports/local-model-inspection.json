@@ -1,0 +1,87 @@
+{
+  "opsets": {
+    "": 17
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "dtype": "FLOAT",
+      "shape": [
+        1,
+        3,
+        640,
+        640
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "dets",
+      "dtype": "FLOAT",
+      "shape": [
+        1,
+        300,
+        4
+      ]
+    },
+    {
+      "name": "labels",
+      "dtype": "FLOAT",
+      "shape": [
+        1,
+        300,
+        8
+      ]
+    }
+  ],
+  "operators": {
+    "Constant": 459,
+    "Cast": 36,
+    "Conv": 9,
+    "Shape": 25,
+    "Slice": 62,
+    "Concat": 24,
+    "Reshape": 122,
+    "Transpose": 113,
+    "ConstantOfShape": 7,
+    "Mul": 114,
+    "Equal": 6,
+    "Where": 8,
+    "Expand": 9,
+    "Add": 169,
+    "Tile": 2,
+    "LayerNormalization": 49,
+    "MatMul": 140,
+    "Sqrt": 45,
+    "Div": 35,
+    "Softmax": 18,
+    "Erf": 12,
+    "Sigmoid": 8,
+    "Split": 1,
+    "Unsqueeze": 19,
+    "Greater": 2,
+    "Less": 1,
+    "And": 1,
+    "Not": 3,
+    "ReduceSum": 4,
+    "ReduceMax": 1,
+    "TopK": 1,
+    "GatherElements": 2,
+    "Relu": 8,
+    "Exp": 3,
+    "Gather": 4,
+    "Sin": 4,
+    "Cos": 4,
+    "Gemm": 3,
+    "Sub": 3,
+    "GridSample": 3
+  },
+  "metadata": {},
+  "files": [
+    {
+      "file": "rfdetr_small_7cls_static_640x640_new1665.onnx",
+      "sha256": "073b767a0caed9bcccd995d121ee3a39a46224fb977695f7badbf1c70bb03052"
+    }
+  ],
+  "checker": true
+}

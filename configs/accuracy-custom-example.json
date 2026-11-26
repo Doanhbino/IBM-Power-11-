@@ -1,0 +1,36 @@
+{
+  "model": "/home/models/runs/export-nano-fp32/inference_model.onnx",
+  "input_npz": "data/input.npz",
+  "mode": "model",
+  "backend": "cpu",
+  "threads": 1,
+  "inter_threads": 1,
+  "spinning": false,
+  "warmup": 30,
+  "iterations": 1000,
+  "seed": 42,
+  "size": [
+    384,
+    384
+  ],
+  "mean": [
+    0.485,
+    0.456,
+    0.406
+  ],
+  "std": [
+    0.229,
+    0.224,
+    0.225
+  ],
+  "boxes_output": "dets",
+  "logits_output": "labels",
+  "background_index": -1,
+  "top_k": 300,
+  "threshold": 0.25,
+  "category_ids": {
+    "0": 1
+  },
+  "accuracy_threshold": 0.001,
+  "accuracy_top_k": 300
+}

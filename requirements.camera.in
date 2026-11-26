@@ -1,0 +1,4 @@
+# Resolve on the target; binary availability is a gate, not assumed.
+-r requirements.in
+opencv-python-headless
+pycocotools

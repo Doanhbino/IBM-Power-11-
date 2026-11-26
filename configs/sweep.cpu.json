@@ -1,0 +1,32 @@
+{
+  "base_config": "cpu.json",
+  "threads": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    24,
+    30,
+    60,
+    120,
+    240
+  ],
+  "smt_limits": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "layouts": [
+    "all",
+    "numa-local",
+    "spread"
+  ],
+  "workers": [
+    1,
+    2,
+    4
+  ],
+  "repeats": 3
+}
