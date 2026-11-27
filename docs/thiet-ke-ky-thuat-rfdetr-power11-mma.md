@@ -251,6 +251,7 @@ Quy tắc build:
 - `-mcpu=power11` được SG24-8592 §5.3.2 nhắc đến nhưng **chưa kiểm GCC 11.5.0 có hỗ trợ không**. Phải chạy probe biên dịch trước khi dùng, không mặc định.
 - GCC ≥ 10 và LLVM ≥ 12 hỗ trợ MMA builtin [TL, REDP-5612 ch.5; P10 QS]. P10 QS khuyên GCC 11.2 trở lên để có đủ tính năng ISA 3.1. GCC 11.5 thỏa điều kiện này.
 - Tên builtin cần chú ý: REDP-5612 dùng `__builtin_mma_assemble_acc`, còn trang Open XL 17.1.1 liệt kê `__builtin_mma_build_acc` [TL]. Mã repo chỉ dùng `xxsetaccz`, `xvf32gerpp`, `disassemble_acc`, là các tên có mặt ở cả hai nguồn.
+- Trước khi dùng cờ nào, chạy `bash scripts/probe_mma_toolchain.sh` trên server (chỉ đọc, biên dịch chương trình nhỏ trong thư mục tạm). Script kiểm: builtin MMA biên dịch được với `-mcpu=power10 -mmma`; compiler có nhận `-mcpu=power11` không; và `AT_HWCAP2` có `PPC_FEATURE2_MMA`/`ARCH_3_1`. Đây là cách trả lời mục "GCC 11.5 có hỗ trợ `-mcpu=power11` không" bằng thực nghiệm thay vì tin một trang tổng quan.
 - Mỗi build ghi `build-manifest.json` (hash nguồn và sản phẩm), `configure.log`, `build.log`, `ctest.log` (`scripts/build_core.sh`).
 - **Không thêm cờ ORT kiểu `--enable_mma` hay `--use_openblas`.** Không tài liệu chính thức nào nêu các cờ này. MLAS tự probe compiler và tự dispatch theo HWCAP [TL, `docs/SUPPORT.md`, `docs/BUILD_ORT.md`].
 
@@ -396,6 +397,8 @@ Không cộng percentile của từng stage để suy ra percentile tổng. `rea
 
 Thay đổi chỉ khác thứ tự cộng (thread, spinning, NUMA) phải qua hai dòng sai số tensor. Thay đổi kernel hay precision phải qua cả 5 dòng.
 
+Công cụ cho dòng detection: `scripts/compare_detections.py --reference runs/<R-ref> --candidate runs/<R2> --output gate.json`. Chạy hai cấu hình trên cùng clip replay (replay chặn producer nên frame ID khớp nhau), ghép box theo từng frame và cùng class slot với IoU ≥ 0,99 và |Δscore| ≤ 1e-3, thoát mã 2 nếu có bất kỳ frame nào lệch, hoặc có dưới 100 frame so sánh được. Đã có 8 unit test (`tests/test_compare_detections.py`) cho các trường hợp giống hệt, nhiễu số nhỏ, mất box, đổi class, lệch score, lệch box, thiếu frame và không giao frame. Các dòng sai số tensor `dets/labels` vẫn dùng `validate_onnx.py`.
+
 ### 7.4 Tiêu chí nghiệm thu
 
 | Hạng mục | Điều kiện đạt |
@@ -456,9 +459,33 @@ Rủi ro:
 9. **Nguyên nhân lệch detection C++ và Python** trên cùng frame.
 10. **Nhiều worker và soak:** 2/4 worker đồng thời, live 1 giờ, hành vi reconnect RTSP.
 11. **Đọc lại mã MLAS đúng tag v1.27.0.** Ngày 27-11-2026, các URL GitHub của `onnxruntime_mlas.cmake` và `platform.cpp` (cả `main` lẫn tag) trả 404. Bằng chứng hiện dựa trên lần đối chiếu mã ngày 25-11-2026 (`docs/SOURCES.md`, nhánh `main` và `v1.23.2`) và trên binary thật của wheel 1.27.0.
-12. **Training:** nếu mở lại, `perf` trên một bước train RF-DETR thật, và xác định Conv đi qua oneDNN hay kernel native.
+12. **Compiler:** kết quả `probe_mma_toolchain.sh` trên server (GCC 11.5, `-mcpu=power11`, hwcap).
+13. **Kernel INT8/FP16/BF16 trong binary ORT đang dùng:** chưa kiểm symbol QGEMM; FP16/BF16 chưa có bằng chứng.
+14. **Training:** nếu mở lại, `perf` trên một bước train RF-DETR thật, và xác định Conv đi qua oneDNN hay kernel native.
 
 ---
+
+## 9b. Đối chiếu tài liệu tổng quan "Power11 processor AI capabilities" (IBM, Power S1112)
+
+Trang này là tài liệu giới thiệu sản phẩm cho Power S1112, không có số đo, không có hướng dẫn kiểm chứng. Cách dùng trong dự án:
+
+| Nội dung trong trang | Cách xử lý | Lý do |
+|---|---|---|
+| MMA nằm trong mỗi core, 4 đơn vị MMA/core | **Chấp nhận như mô tả kiến trúc**, đã khớp SG24-8592 §5.3 và P10 QS | Có hai nguồn độc lập |
+| VSX hợp nhất FPR/VMX thành VSR; gồm cộng nhân, permute, tích điểm | **Chấp nhận**, và dùng để phân loại: Softmax, LayerNorm, Erf, Add/Mul chạy VSX hoặc vô hướng, không chạy MMA (mục 2.1) | Khớp SG24-8592 §3.2 |
+| "Độ trễ cực kỳ thấp", "lý tưởng cho edge" | **Không dùng làm bằng chứng**, đây là phát biểu quảng bá | Chưa có số đo. Số đo thực của ta là 2,7–3,2 FPS ở 4 thread |
+| "GCC 10.2 trở lên có `-mcpu=power11`" | **Chưa tin.** Chạy `probe_mma_toolchain.sh` trên GCC 11.5 của server | Trang không nêu bản GCC nào có cờ này. Builtin MMA có từ GCC 10, còn `-mcpu=power11` là việc khác và chỉ thực nghiệm mới trả lời được |
+| "Python (NumPy, SciPy...) tự động thừa kế MMA" | **Không chấp nhận.** SG24-8592 §5.5.2 cảnh báo wheel devpi có OpenBLAS cấu hình Power9 mà không có kernel MMA | Mỗi wheel phải kiểm tầng 2 và tầng 3. Với torch hiện dùng đã thấy `sgemm_kernel_POWER10` trong `perf` |
+| Hỗ trợ INT8 và FP16 "mixed precision" ở phần cứng | **Ghi nhận khả năng ISA**, chưa phải khả năng phần mềm. Xem P6 bên dưới | ISA 3.1 có các lệnh `xvi8ger4`, `xvf16ger2`, `xvbf16ger2`; còn việc MLAS có kernel và dispatch cho RF-DETR không thì chưa xác minh |
+| Python 3.13/3.14 free-threaded và JIT | **Không áp dụng** cho đường inference chính | Hot path là C++ và ORT, Python chỉ điều phối |
+| Spyre không hỗ trợ trên Power S1112 | **Không áp dụng** | Máy của ta có 240 logical CPU và 8 thiết bị trong `lspci`, nên không phải S1112. Không suy ra model server từ trang này (xem mục 1.1) |
+
+**P6 chi tiết: precision thấp là thí nghiệm riêng, mở sau khi FP32 đã chốt.** Điều kiện vào P6:
+
+1. **Kernel có thật cho dtype đó.** Với INT8: kiểm trong binary ORT đang dùng có symbol QGEMM POWER10 (nguồn mã MLAS ghi có `qgemm_kernel_power10.cpp`, cần xác minh lại trên đúng binary bằng `nm -D`/`perf`). Với FP16 và BF16: **chưa có bằng chứng** MLAS có kernel POWER cho hai kiểu này, nên không đưa vào kế hoạch cho tới khi tìm thấy symbol.
+2. **Đường tạo model.** RF-DETR export INT8 qua tùy chọn lượng tử hóa của tài liệu, chỉ MatMul và Gemm được lượng tử hóa và cần dữ liệu calibration. Cần tập ảnh giao thông đại diện, và phải ghi hash của tập calibration.
+3. **Gate độ chính xác mở.** Phải có tập nhãn (mục 9, #8) rồi mới chạy `accuracy_gate.py`. Không có nhãn thì chỉ báo sai số tensor và độ lệch detection, và không được tuyên bố "accuracy giữ nguyên".
+4. **A/B riêng**, ghi rõ khác model (hash khác), khác precision. Không gộp vào phép đối chứng FP32 (mục 7).
 
 ## 10. Nguồn và quyết định gắn với nguồn
 
@@ -475,6 +502,7 @@ Rủi ro:
 | [ORT build](https://onnxruntime.ai/docs/build/inferencing.html) | Linux PPC64LE: YES | Hiện hành | Có đường build source nếu cần | Không có ghi chú riêng cho Power hay MMA |
 | [ORT MLAS CMake](https://github.com/microsoft/onnxruntime/blob/main/cmake/onnxruntime_mlas.cmake) | Đối chiếu ngày 25-11-2026 (`docs/SOURCES.md`) | `main`, `v1.23.2` | Không thêm cờ MMA giả định | Ngày 27-11-2026 URL trả 404; chưa đọc đúng tag v1.27.0 |
 | [RF-DETR ONNX](https://rfdetr.roboflow.com/latest/exports/onnx/) | Input `input`; output `dets` (cxcywh chuẩn hóa) và `labels` (logit, sigmoid); `num_classes+1` slot; preprocess `antialias=False` và mean/std ImageNet; INT8 chỉ lượng tử MatMul/Gemm và cần dữ liệu calibration | Trang ngày 06-11-2026 | Hợp đồng tensor và decoder; ứng viên INT8 (mục 6.4) | Với checkpoint này slot background là 4 (output có 5 kênh); đã xác nhận bằng chạy thật [ĐC] |
+| IBM, "What are the Power11 processor AI capabilities?" (trang tổng quan Power S1112, do chủ dự án dán; không có URL kèm theo) | Toàn bộ | Không ghi ngày | Chỉ phân loại phát biểu (mục 9b) | Tài liệu giới thiệu sản phẩm; không có số đo; không dùng làm bằng chứng kỹ thuật |
 | Báo cáo YOLOv5-face trên IBM Spyre v1.docx (SHA256 `80341ff7…0b31`, tóm tắt trong `docs/EVIDENCE.md`) | Toàn bộ | 23-10-2026 | **Không dùng** cho quyết định CPU MMA | Model `yolov5s-face`, Spyre, FP16, 50 ảnh. Khác model, khác phần cứng, khác precision |
 
 Các con số [ĐC] trong tài liệu (lparstat, perf, GFLOP/s, FPS) lấy từ output thật trên server 10.0.1.70 trong các phiên ngày 25 đến 27-11-2026. Output thô nằm trong `/home/models/probe/` và `runs/` trên server.
