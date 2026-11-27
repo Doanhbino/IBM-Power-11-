@@ -407,6 +407,25 @@ Hai nguồn khớp nhau: Gemm, MatMul và FusedMatMul chiếm 57,7% thời gian 
 4. Nguyên nhân LayerNorm chậm chưa biết: mã nguồn ORT trên GitHub trả 404 nên chưa đọc được `layer_norm_impl`. Không suy đoán cơ chế.
 5. Ba giả thuyết cần xét lại: H2 (phép từng phần tử đáng kể) **được ủng hộ**; H1 (attention MatMul động không đi qua SGEMM) **không bị bác**: có `MatMul`/`FusedMatMul` 12,6% thời gian node nhưng stack của chúng chưa thấy; H3 (đồng bộ thread) **bị yếu đi** vì chỉ 3,5%.
 
+### 6.2d Kết quả quét số thread P3 ([ĐC], `runs/ab-threads1`)
+
+Replay clip cố định 400 frame, binary `build-power-camera`, 1 worker, NUMA node 0, `smt-limit 1`, 12 lượt xen kẽ (T4,T6,T8,T2,T2,T8,T6,T4,T4,T6,T8,T2), 3 lượt mỗi nhánh, mỗi lượt 400 mẫu, `allow_spinning=0`, `capture_cpus` không dùng. Trung bình ± độ lệch chuẩn của quần thể (n=3).
+
+| Thread | FPS | Inference p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|
+| 2 | 2,39 ± 0,07 | 401,1 ± 1,7 | 455,1 ± 66,4 | 522,6 ± 149,8 |
+| 4 | 3,00 ± 0,02 | 305,3 ± 9,9 | 472,7 ± 19,5 | 523,0 ± 14,1 |
+| 6 | 2,99 ± 0,05 | 310,7 ± 4,1 | 398,8 ± 8,0 | 454,4 ± 9,4 |
+| 8 | 3,17 ± 0,09 | 292,6 ± 5,8 | 394,6 ± 21,3 | 435,6 ± 18,0 |
+
+Đọc theo quy tắc đã đặt (chênh FPS cần lớn hơn khoảng 3,5% và p95 không xấu đi vượt nhiễu):
+- **2 thread chậm hơn 4 thread khoảng 20%**: vượt ngưỡng nhiễu rõ ràng.
+- **6 thread không khác 4 thread về FPS** (−0,3%) nhưng p95 thấp hơn rõ (399 so với 473 ms, chênh khoảng 74 ms với độ lệch 8 và 20).
+- **8 thread nhanh hơn 4 thread khoảng 5,7%** (3,17 so với 3,00), p95 thấp hơn (395 so với 473 ms). Vượt ngưỡng 3,5% nhưng ở mức biên (khoảng 2,6 lần sai số chuẩn của hiệu, chỉ 3 lượt).
+- **Scale rất kém:** 2→4 thread chỉ nhanh 1,26 lần, 4→8 thread chỉ 1,06 lần. Trong đó gấp đôi thread chỉ cho lợi ích nhỏ, nên throughput tổng nên tăng bằng nhiều worker thay vì nhiều thread một worker.
+- **Không so sánh tuyệt đối giữa các phiên.** T4 ở đây là 3,00 FPS, trong khi phép so binary chạy trước đó cho 3,15–3,22 FPS cùng cấu hình. Lệch khoảng 5–7% giữa hai phiên cách nhau khoảng một giờ trên LPAR shared. Chỉ so sánh trong cùng một phiên xen kẽ.
+- Chưa biết nguyên nhân scale kém. Các giả thuyết cần phân xử: phần không song song hóa được trong ORT (một số operator chạy trên thread chính), chia việc không đều giữa các thread, băng thông bộ nhớ, hoặc nhiễu LPAR. Một mô hình Amdahl hai tham số khớp ba điểm này cho kết quả ngoại suy về 1 thread mâu thuẫn với tốc độ GEMM đã đo, nên **không** dùng mô hình đó để suy phần trăm.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
@@ -497,7 +516,7 @@ flowchart LR
 | P0 | `inventory.py`, `lparnumascore`, đóng băng R-ref replay (clip, config, hash) | Quyền đọc server | `runs/preflight/inventory.json`, R-ref | Clip và đo nhiễu xong [ĐC]. Inventory mới chưa chạy. |
 | P1 | Tensor từ ảnh thật, model-only 3 lượt | P0 | Phân phối latency chỉ của model | Chưa làm |
 | P2 | ORT profile, `perf -g`, bảng hotspot, `shapes.json`, `gemm_sweep` trên shape thật | P0; P3 chọn số thread | Bảng mục 6.1, hồ sơ tầng 3 | Chưa làm, **ưu tiên số 1** |
-| P3 | Thread 2/4/6/8, rồi spinning, rồi SMT | P0 | Cấu hình latency tốt nhất | Thread sweep đang chạy (`runs/ab-threads1`) |
+| P3 | Thread 2/4/6/8, rồi spinning, rồi SMT | P0 | Cấu hình latency tốt nhất | Thread sweep xong (mục 6.2d). Còn spinning và SMT |
 | P4 | Mỗi ứng viên R2+ theo mục 6.4, một thay đổi mỗi lần | P2 | Bảng trước/sau và quyết định giữ hoặc hoàn nguyên | Chưa làm |
 | P5 | 1/2/4 worker, camera live, soak 1 giờ, reconnect | P3, P4 | Cấu hình throughput, telemetry LPAR | Chưa làm |
 | P6 | INT8/BF16 | Tập nhãn đánh giá | Thí nghiệm riêng có accuracy gate | Chưa làm |
