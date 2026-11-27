@@ -1,5 +1,5 @@
 {
-  "binary": "build/rfdetr_camera",
+  "binary": "build-camera/rfdetr_camera",
   "runtime_library": "/home/models/stack/onnxruntime-1.27.0/lib/libonnxruntime.so.1.27.0",
   "require_mma": false,
   "timeout_s": 600,
