@@ -239,7 +239,7 @@ Queue: mỗi camera có `BoundedQueue` riêng. Live dùng `drop_oldest` và tùy
 | ORT C++ SDK | Header từ NuGet 1.27.0 (`ORT_API_VERSION` 27) cộng `libonnxruntime.so.1.27.0` và `libprotobuf-lite` lấy từ wheel IBM, đặt tại `/home/models/stack/onnxruntime-1.27.0` | Tự lắp ráp | [ĐC]. Phải ghi SHA256 của `.so` vào `run.json` (đã có). |
 | MLAS | Theo wheel ORT 1.27.0 | Không build lại | `MlasSgemmKernelPOWER10` chạy thật trên MatMul tổng hợp [ĐC] |
 | OpenCV | 4.13 (conda-forge, headless, FFmpeg) tại `/home/models/stack/opencv4` | Prefix riêng | [ĐC]. `cv2` 5.0.0 trong venv **không có FFmpeg**, không đọc được RTSP [ĐC]. |
-| Compiler cho core | GCC 11.5.0 hệ thống | Có sẵn | Probe CMake `-mcpu=power10 -mmma` biên dịch được MMA builtin [ĐC] |
+| Compiler cho core | GCC 11.5.0 hệ thống, kernel 5.14.0-687.57.1.el9_8 | Có sẵn | `-mcpu=power10 -mmma` biên dịch được MMA builtin; `-mcpu=power11` bị từ chối [ĐC] |
 | Link camera | `LDFLAGS="-Wl,-rpath,$C -Wl,--no-as-needed $C/libstdc++.so.6"` | Vì OpenCV conda cần `GLIBCXX_3.4.32` | [ĐC] |
 | CMake | 3.31.8 | Có sẵn | [ĐC] |
 | PyTorch (training/export) | 2.13.0 IBM wheel, OpenBLAS 0.3.32 trong `torch.libs` | venv riêng | `sgemm_kernel_POWER10` chạy thật [ĐC] |
@@ -248,7 +248,7 @@ Queue: mỗi camera có `BoundedQueue` riêng. Live dùng `drop_oldest` và tùy
 Quy tắc build:
 
 - `-mcpu=power10` chỉ áp cho translation unit chứa MMA, không áp toàn binary [TL, P10 QS – GCC: object `-mcpu=power10` không chạy trên Power9 trở về trước]. Power10 và Power11 cùng ISA 3.1, và kernel của OpenBLAS được đặt tên Power10 theo ISA chứ không theo thế hệ chip [TL, SG24-8592 §5.5].
-- `-mcpu=power11` được SG24-8592 §5.3.2 nhắc đến nhưng **chưa kiểm GCC 11.5.0 có hỗ trợ không**. Phải chạy probe biên dịch trước khi dùng, không mặc định.
+- `-mcpu=power11` được SG24-8592 §5.3.2 nhắc đến, nhưng **GCC 11.5.0 trên server từ chối cờ này [ĐC]**. Dùng `-mcpu=power10` (cộng `-mmma` cho đúng translation unit MMA); repo đang làm đúng như vậy.
 - GCC ≥ 10 và LLVM ≥ 12 hỗ trợ MMA builtin [TL, REDP-5612 ch.5; P10 QS]. P10 QS khuyên GCC 11.2 trở lên để có đủ tính năng ISA 3.1. GCC 11.5 thỏa điều kiện này.
 - Tên builtin cần chú ý: REDP-5612 dùng `__builtin_mma_assemble_acc`, còn trang Open XL 17.1.1 liệt kê `__builtin_mma_build_acc` [TL]. Mã repo chỉ dùng `xxsetaccz`, `xvf32gerpp`, `disassemble_acc`, là các tên có mặt ở cả hai nguồn.
 - Trước khi dùng cờ nào, chạy `bash scripts/probe_mma_toolchain.sh` trên server (chỉ đọc, biên dịch chương trình nhỏ trong thư mục tạm). Script kiểm: builtin MMA biên dịch được với `-mcpu=power10 -mmma`; compiler có nhận `-mcpu=power11` không; và `AT_HWCAP2` có `PPC_FEATURE2_MMA`/`ARCH_3_1`. Đây là cách trả lời mục "GCC 11.5 có hỗ trợ `-mcpu=power11` không" bằng thực nghiệm thay vì tin một trang tổng quan.
@@ -263,7 +263,7 @@ Quy tắc build:
 
 | Tầng | Câu hỏi | Bằng chứng chấp nhận | Trạng thái |
 |---|---|---|---|
-| 1. LPAR | CPU có expose MMA cho process? | `AT_HWCAP2` có `PPC_FEATURE2_MMA` và `ARCH_3_1`; `rfdetr_gemm --capability` báo `exposed: true` | **Đạt [ĐC]** |
+| 1. LPAR | CPU có expose MMA cho process? | `AT_HWCAP2` có `PPC_FEATURE2_MMA` và `ARCH_3_1`; `rfdetr_gemm --capability` báo `exposed: true` | **Đạt [ĐC].** `AT_HWCAP2=0xbef60000`: mma=1, arch_3_1=1 (đọc lại bằng `probe_mma_toolchain.sh`) |
 | 2. Binary | Thư viện đang được load có kernel MMA và có đường dispatch? | `objdump -d` trên đúng file `.so` mà process load (hash khớp `run.json`) có lệnh `xvf32ger*`; symbol `MlasSgemmKernelPOWER10` tồn tại | **Đạt [ĐC].** 336 lệnh MMA. |
 | 3. Hot path RF-DETR | Khi RF-DETR chạy, CPU có thực thi kernel đó ở các operator ma trận? | (a) `perf record -g` trên process `rfdetr_camera` (hoặc model-only) đang chạy RF-DETR, symbol MMA chiếm tỉ trọng đáng kể; (b) call stack nối về node MatMul/Conv của ORT; (c) ORT profile cho thấy các node đó chiếm phần lớn thời gian | **Chưa có** |
 
@@ -452,14 +452,14 @@ Rủi ro:
 2. **Bảng hotspot** với shape thật, đặc biệt shape của attention MatMul động (windowed hay toàn cục, số head, số token mỗi window).
 3. **Kết quả sweep thread** (`runs/ab-threads1`), rồi spinning và SMT.
 4. **Inventory mới** trước và sau chiến dịch đo, có `lparnumascore`.
-5. **GCC 11.5 có hỗ trợ `-mcpu=power11`** không (chỉ cần nếu dùng cờ này).
+5. ~~GCC 11.5 có hỗ trợ `-mcpu=power11` không~~ **Đã trả lời [ĐC]: không.** Dùng `-mcpu=power10 -mmma` (đã biên dịch được builtin MMA trên server).
 6. **Model-only từ tensor ảnh thật** để tách model khỏi capture và queue.
 7. **Phiên bản gói `rfdetr`** dùng khi export, ghi vào manifest.
 8. **Tập nhãn đánh giá** cho accuracy gate.
 9. **Nguyên nhân lệch detection C++ và Python** trên cùng frame.
 10. **Nhiều worker và soak:** 2/4 worker đồng thời, live 1 giờ, hành vi reconnect RTSP.
 11. **Đọc lại mã MLAS đúng tag v1.27.0.** Ngày 27-11-2026, các URL GitHub của `onnxruntime_mlas.cmake` và `platform.cpp` (cả `main` lẫn tag) trả 404. Bằng chứng hiện dựa trên lần đối chiếu mã ngày 25-11-2026 (`docs/SOURCES.md`, nhánh `main` và `v1.23.2`) và trên binary thật của wheel 1.27.0.
-12. **Compiler:** kết quả `probe_mma_toolchain.sh` trên server (GCC 11.5, `-mcpu=power11`, hwcap).
+12. ~~Compiler probe~~ **Đã có [ĐC]:** GCC 11.5.0 biên dịch được MMA builtin với `-mcpu=power10` (có và không `-mmma`), từ chối `-mcpu=power11`; `AT_HWCAP2=0xbef60000` có MMA và ARCH_3_1.
 13. **Kernel INT8/FP16/BF16 trong binary ORT đang dùng:** chưa kiểm symbol QGEMM; FP16/BF16 chưa có bằng chứng.
 14. **Training:** nếu mở lại, `perf` trên một bước train RF-DETR thật, và xác định Conv đi qua oneDNN hay kernel native.
 
@@ -474,7 +474,7 @@ Trang này là tài liệu giới thiệu sản phẩm cho Power S1112, không c
 | MMA nằm trong mỗi core, 4 đơn vị MMA/core | **Chấp nhận như mô tả kiến trúc**, đã khớp SG24-8592 §5.3 và P10 QS | Có hai nguồn độc lập |
 | VSX hợp nhất FPR/VMX thành VSR; gồm cộng nhân, permute, tích điểm | **Chấp nhận**, và dùng để phân loại: Softmax, LayerNorm, Erf, Add/Mul chạy VSX hoặc vô hướng, không chạy MMA (mục 2.1) | Khớp SG24-8592 §3.2 |
 | "Độ trễ cực kỳ thấp", "lý tưởng cho edge" | **Không dùng làm bằng chứng**, đây là phát biểu quảng bá | Chưa có số đo. Số đo thực của ta là 2,7–3,2 FPS ở 4 thread |
-| "GCC 10.2 trở lên có `-mcpu=power11`" | **Chưa tin.** Chạy `probe_mma_toolchain.sh` trên GCC 11.5 của server | Trang không nêu bản GCC nào có cờ này. Builtin MMA có từ GCC 10, còn `-mcpu=power11` là việc khác và chỉ thực nghiệm mới trả lời được |
+| "GCC 10.2 trở lên có `-mcpu=power11`" | **Bác bỏ cho compiler của ta [ĐC].** `probe_mma_toolchain.sh` trên server: GCC 11.5.0 báo `unrecognized argument in option -mcpu=power11`. Dùng `-mcpu=power10 -mmma` | Builtin MMA có từ GCC 10, còn `-mcpu=power11` thì không có trong GCC 11.5. Nếu sau này nâng compiler, probe lại trước khi dùng |
 | "Python (NumPy, SciPy...) tự động thừa kế MMA" | **Không chấp nhận.** SG24-8592 §5.5.2 cảnh báo wheel devpi có OpenBLAS cấu hình Power9 mà không có kernel MMA | Mỗi wheel phải kiểm tầng 2 và tầng 3. Với torch hiện dùng đã thấy `sgemm_kernel_POWER10` trong `perf` |
 | Hỗ trợ INT8 và FP16 "mixed precision" ở phần cứng | **Ghi nhận khả năng ISA**, chưa phải khả năng phần mềm. Xem P6 bên dưới | ISA 3.1 có các lệnh `xvi8ger4`, `xvf16ger2`, `xvbf16ger2`; còn việc MLAS có kernel và dispatch cho RF-DETR không thì chưa xác minh |
 | Python 3.13/3.14 free-threaded và JIT | **Không áp dụng** cho đường inference chính | Hot path là C++ và ORT, Python chỉ điều phối |
