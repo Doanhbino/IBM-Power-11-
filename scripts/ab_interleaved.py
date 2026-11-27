@@ -22,17 +22,21 @@ def percentile(values, p):
 
 
 def summarize(run_dir, label, index):
+    """One row per campaign run, combining every worker (throughput_active_fps is already the combined rate)."""
     run = json.loads((run_dir / 'run.json').read_text())
-    worker = run['workers'][0]
-    camera = worker['cameras'][0]
-    with (run_dir / 'worker-00' / 'samples.csv').open() as stream:
-        rows = list(csv.DictReader(stream))
+    cameras = [camera for worker in run['workers'] for camera in worker['cameras']]
+    rows = []
+    for path in sorted(run_dir.glob('worker-*/samples.csv')):
+        with path.open() as stream:
+            rows.extend(csv.DictReader(stream))
     inference = [float(row['inference_ms']) for row in rows]
     total = [float(row['read_to_result_ms']) for row in rows]
     return {'label': label, 'index': index, 'run_id': run.get('run_id'), 'status': run.get('status'),
-            'samples': len(rows), 'enough_samples': len(rows) >= MIN_SAMPLES,
-            'received': camera['received'], 'processed': camera['processed'],
-            'dropped': camera['queue_dropped'], 'errors': camera['errors'],
+            'workers': len(run['workers']), 'samples': len(rows), 'enough_samples': len(rows) >= MIN_SAMPLES,
+            'received': sum(camera['received'] for camera in cameras),
+            'processed': sum(camera['processed'] for camera in cameras),
+            'dropped': sum(camera['queue_dropped'] for camera in cameras),
+            'errors': sum(camera['errors'] for camera in cameras),
             'fps': run['throughput_active_fps'],
             'inference_mean': st.mean(inference), 'inference_p50': percentile(inference, 50),
             'inference_p95': percentile(inference, 95), 'inference_p99': percentile(inference, 99),
