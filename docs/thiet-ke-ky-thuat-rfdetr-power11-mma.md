@@ -650,6 +650,24 @@ Replay clip 400 frame như một camera, 3 mảnh × 4 thread, `allow_spinning=1
 
 Cấu hình đề xuất cho một camera: FP32, `allow_spinning=1`, 3 mảnh × 4 thread. INT8 là tùy chọn tăng tốc, chỉ dùng khi chất lượng được xác nhận bằng dữ liệu có nhãn. **Chưa kiểm chứng:** camera live, độ mượt (khoảng cách giữa kết quả liên tiếp), độ trễ end-to-end từ lúc đọc frame đến kết quả.
 
+### 6.2o Camera RTSP live, một camera chia 3 mảnh ([ĐC], `scripts/live_summary.py`)
+
+Cấu hình: FP32, `allow_spinning=1`, 3 mảnh × 4 thread (NUMA node 0, 1, 2), `queue_capacity=2`, `mode=live`, `duration_s=60`, binary `build-power-camera`. Camera phát khoảng 24,9 FPS. Một lượt.
+
+| | Giá trị |
+|---|---|
+| Frame nhận / xử lý / bỏ | 1494 / 698 / 796 (53,3%) |
+| **FPS xử lý của camera** | **11,45** |
+| Lỗi, kết nối lại, frame trùng | 0, 0, 0 (camera chấp nhận 3 kết nối đồng thời) |
+| **Khoảng cách giữa hai kết quả liên tiếp** | p50 **65 ms**, p95 **215 ms**, max 281 ms |
+| Queue age (chờ trong hàng đợi) | p50 184,5; p95 234,5; p99 252,1; max 317,6 ms |
+| Inference | p50 240,5; p95 273,5; p99 309,4; max 439,3 ms |
+| **Đọc frame đến kết quả** | p50 **477,5**; p95 541,4; p99 573,6; max 638,3 ms |
+
+So với R0 (live, 1 worker, 4 thread, spinning tắt, 2,73 FPS): tốc độ xử lý tăng khoảng 4,2 lần.
+
+Thời gian chờ trong hàng đợi (khoảng 184 ms) chiếm gần 40% độ trễ đọc đến kết quả. Với `queue_capacity=2` và chính sách bỏ frame cũ nhất (`drop_oldest`), khi worker rảnh nó lấy frame *cũ nhất* trong hai frame đang chờ. Mỗi mảnh nhận một frame mỗi khoảng 120 ms (25 FPS chia 3) mà xử lý mất khoảng 240 ms, nên frame cũ nhất đã chờ 120 đến 240 ms. Với `queue_capacity=1` frame chờ chỉ còn tối đa một khoảng nhận (khoảng 0 đến 120 ms). Giả thuyết chưa kiểm chứng; kiểm bằng cách đổi một khóa cấu hình.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
