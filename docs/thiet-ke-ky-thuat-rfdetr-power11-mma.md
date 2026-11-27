@@ -426,6 +426,24 @@ Replay clip cố định 400 frame, binary `build-power-camera`, 1 worker, NUMA 
 - **Không so sánh tuyệt đối giữa các phiên.** T4 ở đây là 3,00 FPS, trong khi phép so binary chạy trước đó cho 3,15–3,22 FPS cùng cấu hình. Lệch khoảng 5–7% giữa hai phiên cách nhau khoảng một giờ trên LPAR shared. Chỉ so sánh trong cùng một phiên xen kẽ.
 - Chưa biết nguyên nhân scale kém. Các giả thuyết cần phân xử: phần không song song hóa được trong ORT (một số operator chạy trên thread chính), chia việc không đều giữa các thread, băng thông bộ nhớ, hoặc nhiễu LPAR. Một mô hình Amdahl hai tham số khớp ba điểm này cho kết quả ngoại suy về 1 thread mâu thuẫn với tốc độ GEMM đã đo, nên **không** dùng mô hình đó để suy phần trăm.
 
+### 6.2e Chia việc giữa các thread ([ĐC], `perf report --sort pid` trên `runs/p2-perf.data`)
+
+Chu kỳ theo thread của process `rfdetr_camera` (4 thread, replay, 30 giây):
+
+| Thread | % chu kỳ của process |
+|---|---|
+| 1562328 (thread chính, gọi `Run()`) | **43,81** |
+| 1562331 | 21,04 |
+| 1562330 | 19,54 |
+| 1562329 | 14,66 |
+| 4 thread capture/decode | 0,79 + 0,06 + 0,06 + 0,04 |
+
+Bốn thread tính toán cộng 99,05%. Chia đều sẽ là khoảng 24,8% mỗi thread. **Thread chính dùng gấp 2,1 đến 3,0 lần chu kỳ của ba thread còn lại**, và thread kém nhất chỉ dùng 14,7%.
+
+Suy luận (giả định, chưa đo): nếu thread chính luôn bận (nó là thread gọi `Run()` và tham gia mọi phần song song), thì ba thread còn lại bận khoảng 48%, 45% và 33% so với nó; trung bình chỉ khoảng 2,3 trên 4 core được dùng, tức khoảng 57%. Con số này khớp với hiệu quả scale 41–61% đã thấy ở mục 6.2b và với việc quét thread chỉ cải thiện nhỏ (mục 6.2d). Hai thread capture dùng dưới 1% chu kỳ trong replay MJPG nên H5 (`capture_cpus`) gần như không có gì để cải thiện ở replay; chỉ có thể thấy trên live H.264.
+
+Chưa biết thread chính đang làm gì mà các thread khác không làm. Việc cần làm tiếp: so sánh symbol giữa thread chính và một thread phụ (mục 9).
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
@@ -549,7 +567,8 @@ Rủi ro:
 11. **Đọc lại mã MLAS đúng tag v1.27.0.** Ngày 27-11-2026, các URL GitHub của `onnxruntime_mlas.cmake` và `platform.cpp` (cả `main` lẫn tag) trả 404. Bằng chứng hiện dựa trên lần đối chiếu mã ngày 25-11-2026 (`docs/SOURCES.md`, nhánh `main` và `v1.23.2`) và trên binary thật của wheel 1.27.0.
 12. ~~Compiler probe~~ **Đã có [ĐC]:** GCC 11.5.0 biên dịch được MMA builtin với `-mcpu=power10` (có và không `-mmma`), từ chối `-mcpu=power11`; `AT_HWCAP2=0xbef60000` có MMA và ARCH_3_1.
 13. **Kernel INT8/FP16/BF16 trong binary ORT đang dùng:** chưa kiểm symbol QGEMM; FP16/BF16 chưa có bằng chứng.
-14. **Training:** nếu mở lại, `perf` trên một bước train RF-DETR thật, và xác định Conv đi qua oneDNN hay kernel native.
+14. **So sánh symbol giữa thread chính và thread phụ** trong `perf` để biết phần không song song hóa là operator nào.
+15. **Training:** nếu mở lại, `perf` trên một bước train RF-DETR thật, và xác định Conv đi qua oneDNN hay kernel native.
 
 ---
 
