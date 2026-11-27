@@ -26,7 +26,7 @@ def run(binary, shapes, output, backends, repeats=3, iterations=20):
     out.mkdir(parents=True, exist_ok=False)
     record = {**identity('gemm_microbenchmark'), 'status': 'running', 'binary': artifact(binary),
               'shapes': artifact(shapes), 'profile': source['profile'], 'results': [],
-              'scope': 'Experimental 4x4 kernel, not linked into ORT/PyTorch; not RF-DETR execution evidence or optimized BLAS comparison'}
+              'scope': 'Experimental 8x16 (8-accumulator) kernel, not linked into ORT/PyTorch; not RF-DETR execution evidence or optimized BLAS comparison'}
     atomic_json(out / 'run.json', record)
     try:
         capability = json.loads(subprocess.check_output([str(binary), '--capability'], text=True))

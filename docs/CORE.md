@@ -12,8 +12,8 @@ Core nằm trong `core/`, dùng C++17. Python giữ nhiệm vụ điều phối 
 | `placement` | Lấy cpuset thực, kiểm mask, bind CPU và memory policy trước khi khởi tạo model; lỗi bind được trả về |
 | `OrtSession` | Một input FP32 batch 1; kiểm tên, dtype và shape; ORT CPU/MLAS từ shared library đã chọn; giữ output tới lần Run tiếp theo |
 | `camera_pipeline` | Một capture thread/stream, queue riêng, một inference consumer/worker, round-robin; signal/reconnect/timeout và join thread |
-| `PackedRhs` / `GemmWorkspace` | FP32 C=A×B, logical strides, pack B tái sử dụng, pack A theo panel, tile 4×4 và tail |
-| `gemm_mma.cpp` | Kernel thử nghiệm ISA 3.1 dùng MMA FP32; chỉ compile translation unit này với `-mcpu=power10 -mmma` |
+| `PackedRhs` / `GemmWorkspace` | FP32 C=A×B, logical strides, pack B tái sử dụng (panel 16 cột, căn 64 byte), pack A theo panel 8 hàng, tile 8×16, chia khối K=256, tail |
+| `gemm_mma.cpp` | Kernel thử nghiệm ISA 3.1: 8 accumulator, tile 8×16, 8 `xvf32gerpp` cho 6 lần nạp vector mỗi bước k (IBM REDP-5612 §4.1); chỉ compile translation unit này với `-mcpu=power10 -mmma` |
 
 Kernel GEMM riêng phục vụ nghiên cứu shape/packing/correctness. **Kernel này chưa được tích hợp vào graph ORT hoặc PyTorch và chưa được benchmark trên Power11.** Đường RF-DETR chính dùng backend MLAS/PyTorch Power có MMA đã được kiểm chứng. Chỉ đưa kernel riêng vào graph sau khi profile chứng minh khoảng trống và A/B chứng minh có lợi. Không thay backend ORT bằng việc cài OpenBLAS.
 

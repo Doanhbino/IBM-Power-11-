@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <system_error>
 #include <future>
@@ -106,8 +107,9 @@ void yolo() {
     throws([] { rfdetr::YoloDecoder invalid({2, .25f, .5f, 0}); });
 }
 void gemm(rfdetr::GemmBackend backend) {
-    for (std::size_t m : {1, 3, 4, 5, 9}) for (std::size_t n : {1, 3, 4, 7})
-        for (std::size_t k : {1, 2, 5, 17}) for (bool transposed : {false, true}) {
+    // Sizes cross the 8x16 tile edges and the 256-deep K block (REDP-5612 section 4.1).
+    for (std::size_t m : {1, 3, 4, 5, 8, 9, 17}) for (std::size_t n : {1, 3, 4, 7, 16, 17, 33})
+        for (std::size_t k : {1, 2, 5, 17, 256, 257, 300}) for (bool transposed : {false, true}) {
             std::vector<float> a(m * k), b(n * k), out(m * n + 4, 123.f);
             for (std::size_t i = 0; i < a.size(); ++i) a[i] = (static_cast<int>(i % 13) - 6) / 7.f;
             for (std::size_t i = 0; i < b.size(); ++i) b[i] = (static_cast<int>(i % 11) - 5) / 3.f;
@@ -125,6 +127,13 @@ void gemm(rfdetr::GemmBackend backend) {
         }
 }
 
+void packed_alignment() {
+    // 64-byte aligned panels let the MMA kernel use aligned vector (lxvp) loads.
+    std::vector<float> b(40 * 37, 1.f);
+    const rfdetr::PackedRhs rhs({b.data(), 40, 37, 37, 1});
+    for (std::size_t column : {0, 16, 32})
+        require(reinterpret_cast<std::uintptr_t>(rhs.panel(column)) % 64 == 0, "Packed panel alignment");
+}
 void shared_rhs(rfdetr::GemmBackend backend) {
     const float a[]{1, 4, 2, 5, 3, 6};  // Transposed storage of [[1,2,3],[4,5,6]].
     const float b[]{1, 0, 0, 1, 1, 1};
@@ -144,7 +153,7 @@ void shared_rhs(rfdetr::GemmBackend backend) {
 
 int main() {
     try {
-        queues(); adapter(); yolo(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
+        queues(); adapter(); yolo(); packed_alignment(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
         require(!rfdetr::allowed_cpus().empty(), "Empty effective cpuset");
         throws([] { rfdetr::bind_cpus({-1}); });
         memory_binding();
