@@ -442,7 +442,11 @@ Bốn thread tính toán cộng 99,05%. Chia đều sẽ là khoảng 24,8% mỗ
 
 Suy luận (giả định, chưa đo): nếu thread chính luôn bận (nó là thread gọi `Run()` và tham gia mọi phần song song), thì ba thread còn lại bận khoảng 48%, 45% và 33% so với nó; trung bình chỉ khoảng 2,3 trên 4 core được dùng, tức khoảng 57%. Con số này khớp với hiệu quả scale 41–61% đã thấy ở mục 6.2b và với việc quét thread chỉ cải thiện nhỏ (mục 6.2d). Hai thread capture dùng dưới 1% chu kỳ trong replay MJPG nên H5 (`capture_cpus`) gần như không có gì để cải thiện ở replay; chỉ có thể thấy trên live H.264.
 
-Chưa biết thread chính đang làm gì mà các thread khác không làm. Việc cần làm tiếp: so sánh symbol giữa thread chính và một thread phụ (mục 9).
+**Thread chính làm gì khác thread phụ? ([ĐC], `perf script -F tid,ip,sym`, phần trăm trong chính thread.)** Cả bốn thread tính toán có cùng một cấu hình symbol: `MlasSgemmKernelPOWER10` 44–53%, LayerNorm `ComputeJob` 16,0–17,7%, `L_Rows8` 6,6–7,8%, `MlasErfKernel` 5,3–7,0%, `MlasComputeSumExpF32Kernel` 4,8–5,7%. Không có operator nào chạy **chỉ** trên thread chính. Khác biệt duy nhất của thread chính là phần điều phối: `ThreadPool::RunInParallel` 6,6% (không nằm trong 7 symbol đầu của ba thread phụ) và `GemmBroadcastBias` 2,7%, nên tỉ lệ SGEMM trong thread chính thấp hơn (44% so với 52–53%).
+
+Đổi sang chu kỳ tuyệt đối (tổng thread nhân phần trăm): thread chính thực hiện khoảng 40% tổng chu kỳ SGEMM và khoảng 44% tổng chu kỳ LayerNorm, so với khoảng 16–22% cho mỗi thread phụ. Tức **thread chính làm gần gấp đôi việc của mỗi thread phụ trong cùng loại operator**, chứ không phải gánh một operator riêng. LayerNorm cũng được chia cho cả bốn thread, nên LayerNorm không phải là phần chạy đơn thread.
+
+Giả thuyết giải thích (chưa kiểm chứng): với `allow_spinning=0`, các thread phụ ngủ giữa các vùng song song và đánh thức chậm, nên thread chính (đã chạy sẵn) nhận phần lớn khối việc trước khi thread phụ vào; `RunInParallel` 6,6% trên thread chính là chi phí điều phối. Phép thử trực tiếp: A/B `allow_spinning` 0 và 1 ở 4 thread, rồi đo lại phân bố chu kỳ theo thread. Nếu `allow_spinning=1` làm phân bố đều hơn và tăng FPS, giả thuyết được ủng hộ; cái giá là các thread phụ quay vòng chiếm CPU khi nhàn rỗi, đáng kể trên LPAR shared.
 
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
@@ -567,7 +571,7 @@ Rủi ro:
 11. **Đọc lại mã MLAS đúng tag v1.27.0.** Ngày 27-11-2026, các URL GitHub của `onnxruntime_mlas.cmake` và `platform.cpp` (cả `main` lẫn tag) trả 404. Bằng chứng hiện dựa trên lần đối chiếu mã ngày 25-11-2026 (`docs/SOURCES.md`, nhánh `main` và `v1.23.2`) và trên binary thật của wheel 1.27.0.
 12. ~~Compiler probe~~ **Đã có [ĐC]:** GCC 11.5.0 biên dịch được MMA builtin với `-mcpu=power10` (có và không `-mmma`), từ chối `-mcpu=power11`; `AT_HWCAP2=0xbef60000` có MMA và ARCH_3_1.
 13. **Kernel INT8/FP16/BF16 trong binary ORT đang dùng:** chưa kiểm symbol QGEMM; FP16/BF16 chưa có bằng chứng.
-14. **So sánh symbol giữa thread chính và thread phụ** trong `perf` để biết phần không song song hóa là operator nào.
+14. ~~So sánh symbol giữa thread chính và thread phụ~~ **Đã có [ĐC]** (mục 6.2e): cùng cấu hình symbol, thread chính làm gần gấp đôi; không có operator đơn thread nổi bật.
 15. **Training:** nếu mở lại, `perf` trên một bước train RF-DETR thật, và xác định Conv đi qua oneDNN hay kernel native.
 
 ---
