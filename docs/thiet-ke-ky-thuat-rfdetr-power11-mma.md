@@ -622,6 +622,18 @@ A/B: replay clip 400 frame, binary `build-power-camera`, 1 worker × 4 thread, `
 
 Phần GEMM giảm từ khoảng 53% (FP32) xuống khoảng 32% (INT8 18,2 + FP32 11,9 + `L_Rows8` 1,8); nhưng các nút Quantize/Requantize/pack/Dequantize chiếm thêm khoảng 9% chu kỳ, và các phép không phải GEMM trở thành nút thắt chính: LayerNorm 14,3%, Softmax khoảng 7,5%, GELU 5,5%. Thời gian chờ giữa các thread (`RunInParallel`) chiếm 17%, thước đo trực tiếp của mất cân bằng. Con số này **không so trực tiếp** với 3,5% ở mục 6.2c vì lượt đó tắt spinning (thread ngủ, không tính chu kỳ).
 
+### 6.2m Chia một camera cho nhiều worker (`--shards`, [ĐC] replay)
+
+Replay clip 400 frame như **một camera**, chia 3 mảnh (`frame_stride=3`, `frame_offset` 0, 1, 2), mỗi mảnh một worker (NUMA node 0, 1, 2), mỗi worker mô hình INT8, 4 thread, `allow_spinning=1`, binary `build-power-camera` build lại có `frame_stride`. Một lượt (chưa lặp).
+
+| | Giá trị |
+|---|---|
+| Frame mỗi mảnh nhận/xử lý | 134 / 134, 133 / 133, 133 / 133 (tổng 400, mỗi frame đúng một lần) |
+| **Tổng FPS của một camera** | **14,32** |
+| So với một worker INT8 (5,08 FPS) | 2,82 lần (hiệu suất khoảng 94%) |
+
+Với cấu hình tốt nhất đã đo của một worker (INT8, 4 thread, spinning), chia một camera cho 3 worker đưa tốc độ xử lý của camera đó từ 5,08 lên 14,32 FPS trên replay. Độ trễ mỗi frame không giảm (vẫn thuộc cỡ 190 ms trở lên). **Chưa đo:** độ trễ từng frame trong lượt này; camera live (giải mã H.264 và nhiều kết nối đồng thời); chất lượng INT8 thật; và FP32 chia mảnh để so sánh trực tiếp.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
