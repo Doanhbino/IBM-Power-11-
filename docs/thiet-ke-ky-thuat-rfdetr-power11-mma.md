@@ -634,6 +634,22 @@ Replay clip 400 frame như **một camera**, chia 3 mảnh (`frame_stride=3`, `f
 
 Với cấu hình tốt nhất đã đo của một worker (INT8, 4 thread, spinning), chia một camera cho 3 worker đưa tốc độ xử lý của camera đó từ 5,08 lên 14,32 FPS trên replay. Độ trễ mỗi frame không giảm (vẫn thuộc cỡ 190 ms trở lên). **Chưa đo:** độ trễ từng frame trong lượt này; camera live (giải mã H.264 và nhiều kết nối đồng thời); chất lượng INT8 thật; và FP32 chia mảnh để so sánh trực tiếp.
 
+### 6.2n FP32 và INT8, một camera chia 3 mảnh ([ĐC], `runs/ab-shard3`)
+
+Replay clip 400 frame như một camera, 3 mảnh × 4 thread, `allow_spinning=1`, 6 lượt xen kẽ (I8,F32,F32,I8,I8,F32); mỗi lượt 3 worker, 400 mẫu, 0 lỗi, 0 frame bị bỏ.
+
+| | FPS từng lượt | Tổng FPS trung bình | Inference p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|---|
+| I8 (INT8) | 13,11 / 14,52 / 12,94 | 13,52 ± 0,71 | 193,0 ± 0,4 | 213,0 ± 19,8 | 305,0 ± 56,6 |
+| F32 (FP32) | 9,83 / 12,01 / 12,08 | 11,31 ± 1,05 | 225,5 ± 0,6 | 258,5 ± 33,5 | 302,5 ± 36,2 |
+| INT8 so với FP32 | +19,5% | | −14,4% | −17,6% | |
+
+- **FP32 chia 3 mảnh đã ở quanh mục tiêu 10 FPS** (trung bình 11,3; hai lượt 12,0, một lượt 9,8). INT8 không cần thiết để đạt 10 FPS và không phải chấp nhận mất mát chất lượng nào.
+- Nhiễu FPS giữa các lượt cùng cấu hình khoảng 8%, nên chênh 19,5% ở 3 lượt chưa chắc chắn; trong khi độ trễ mỗi frame rất ổn định (độ lệch 0,4–0,6 ms) và INT8 thấp hơn 14%, hiệu ứng này đáng tin.
+- FP32 3 mảnh đạt khoảng 3,77 FPS mỗi worker, so với khoảng 2,46 ở 4 worker × 4 thread (mục 6.2h): 3 mảnh (12 thread) gần điểm ngọt của pool, 4 mảnh vượt pool và tranh chấp.
+
+Cấu hình đề xuất cho một camera: FP32, `allow_spinning=1`, 3 mảnh × 4 thread. INT8 là tùy chọn tăng tốc, chỉ dùng khi chất lượng được xác nhận bằng dữ liệu có nhãn. **Chưa kiểm chứng:** camera live, độ mượt (khoảng cách giữa kết quả liên tiếp), độ trễ end-to-end từ lúc đọc frame đến kết quả.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
