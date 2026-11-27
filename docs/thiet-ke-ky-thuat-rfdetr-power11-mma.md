@@ -339,6 +339,32 @@ Từ đó:
 - Inference đo được trung bình 336–351 ms trên 4 thread [ĐC].
 - **Giả thuyết cần phân xử bằng P2:** (H1) attention MatMul động không đi qua đường SGEMM có prepack, hoặc có M/N nhỏ làm hiệu suất thấp; (H2) phép từng phần tử (Softmax trên 6 head × T × T, LayerNorm, Erf) và copy (Transpose/Reshape) chiếm phần lớn; (H3) scale 4 thread kém trên LPAR shared, hoặc `allow_spinning=0` làm tăng chi phí đồng bộ; (H4) GridSample hoặc decoder tốn nhiều hơn dự kiến; (H5) **thread capture/decode nằm cùng CPU mask với thread inference** ([camera_pipeline.cpp](../core/src/camera_pipeline.cpp) tạo capture thread trong cùng process đã bind). Capture trung bình khoảng 40 ms mỗi frame được giải mã trên chính 4 CPU đó, nên cạnh tranh với 4 thread ORT. Chưa đo ảnh hưởng.
 
+### 6.2b Kết quả P2 đợt 1 (profile ORT và `perf` trên `rfdetr_camera`, [ĐC])
+
+**Nguồn và giới hạn dữ liệu.** (1) ORT profile lấy từ `ops.csv` do `profile_ops.py` tạo; file profile gốc mang dấu thời gian 2026-11-26 22:23:31, tức đến từ lượt profile đã chạy trước đó. Lệnh `camera_service.py` trong lượt này báo `FileExistsError` vì thư mục `runs/p2-ortprofile` đã tồn tại, nên `ops.csv` **không** phải của lượt mới. Cùng model, cùng ORT, nhưng chạy bằng binary cũ `build-camera`. Mỗi node có 430 lần gọi (400 frame cộng 30 warmup), tổng thời gian có gồm warmup, và thời gian có thể chồng nhau giữa các node. Chỉ 25 node đầu được xem, nên chưa có tỉ trọng theo toàn graph. (2) `perf` chạy trên `rfdetr_camera` của `build-power-camera`, replay clip 400 frame, 55 672 mẫu `cycles:P` trong 30 giây, không bật profile ORT. Chỉ mục đầu của báo cáo được xem.
+
+**Bằng chứng MMA tầng 3: đạt cho đường Gemm [ĐC].** Symbol đứng đầu là `MlasSgemmKernelPOWER10` trong `libonnxruntime.so.1.27.0`, chiếm **46,36% chu kỳ của cả process**. Call stack nối trọn từ code của repo đến kernel: `main` → `run_camera_worker` → `RfdetrPath::infer` → `OrtSession::run` → `InferenceSession::Run` → `ExecuteGraph` → `onnxruntime::Gemm<float>::Compute` → `MlasGemmBatch` → `MlasSgemmThreaded` → `MlasSgemmPackedOperation` → `MlasSgemmKernelPOWER10`. `MlasSgemmPackedOperation` là đường B đã prepack (trọng số), chiếm 30,9% trong số đó. **Chưa có stack cho đường `MatMul` động (attention)**: phần báo cáo bị cắt trước khi tới đó.
+
+**Cấu trúc graph (đính chính mục 2.1 và 6.2).** Attention là **toàn cục**: 1300 token, 6 head, head dim 64 (không phải attention theo cửa sổ). Tensor attention là `[1, 6, 1300, 1300]`.
+
+| Node (một layer, 12 layer) | ms/lần gọi | GFLOP/lần | GFLOP/s trên 4 thread | % của 4×182 |
+|---|---|---|---|---|
+| `attention MatMul_1` (attn·V), `[6,1300,1300]×[6,1300,64]` | 4,2–4,3 | 1,30 | 301–307 | 41–42% |
+| `fc1` Gemm `[1300,384]×[384,1536]` | 3,8–4,05 | 1,53 | 379–386 | 52–53% |
+| `fc2` Gemm `[1300,1536]×[1536,384]` | 3,4–3,5 | 1,53 | 443–446 | 61% |
+| `FusedMatMul` QKᵀ `[6,1300,64]×[6,64,1300]` | 3,3–3,35 | 1,30 | 387–391 | 53–54% |
+| `Softmax` `[1,6,1300,1300]` | 3,7–3,8 | | 2,7 G phần tử/s | không phải MMA |
+
+Ước lượng khối lượng: tuyến tính khoảng 55 GFLOP, attention khoảng 31 GFLOP, tổng khoảng 86 GFLOP mỗi frame. Với 336 ms inference, tốc độ trung bình khoảng **257 GFLOP/s trên 4 thread**, bằng khoảng 35% mức 4×182 nếu scale tuyến tính hoàn hảo. Năm loại node trong bảng cộng lại khoảng 18,7 ms mỗi layer, nhân 12 layer khoảng 224 ms, tức khoảng hai phần ba thời gian inference.
+
+**Kết luận chưa đầy đủ, và những giả thuyết bị ảnh hưởng.**
+- H1 (attention MatMul động không đi qua SGEMM hiệu quả): **ủng hộ một phần.** `attn·V` đạt 41–42% mức tuyến tính, thấp nhất trong các phép nhân. Chưa biết vì sao: shape `[1300×1300]×[1300×64]` với N=64 hẹp, hay chi phí nhân theo batch 6 head.
+- H2 (phép từng phần tử chiếm phần lớn): Softmax riêng đã mất khoảng 3,7 ms × 12 = 45 ms, khoảng 13% inference, nhưng đây không phải kernel MMA.
+- H3 (hiệu quả threading): **ủng hộ.** Mọi phép nhân chỉ đạt 41–61% mức scale tuyến tính 4 thread. Khoảng trống này có thể do đồng bộ thread, băng thông hoặc nhiễu LPAR. Sweep thread và `allow_spinning` là hai thí nghiệm trực tiếp.
+- Ước lượng "khoảng 80 ms" ở mục 0 và 6.2 là mức tối đa lý thuyết với 100% scale, không phải mức đạt được. Cần hiểu như vậy khi so với 336 ms.
+
+**Còn thiếu để lập bảng hotspot đầy đủ:** tổng thời gian theo loại operator trên toàn graph (không chỉ 25 node), danh sách symbol đứng sau `MlasSgemmKernelPOWER10` trong `perf`, và stack của đường `MatMul` động.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
