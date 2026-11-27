@@ -523,6 +523,37 @@ Tổng hợp theo số worker (tổng FPS, replay, FP32, 4 thread mỗi worker):
 
 
 
+### 6.2j Tám worker × 2 thread: trần throughput chưa chạm ở 4 worker ([ĐC], `runs/ab-multi16t`)
+
+Replay, 6 lượt xen kẽ, 0 frame bị bỏ, 0 lỗi. Z1 = 4 worker × 2 thread, `allow_spinning=1` (1600 mẫu mỗi lượt); Y0 = 8 worker × 2 thread (2 worker mỗi NUMA node), `allow_spinning=0` (3200 mẫu mỗi lượt). Hai nhánh khác nhau ở cả số worker lẫn `allow_spinning`, nên không tách riêng được hai yếu tố; tuy vậy ở 2 thread mỗi worker, spinning không cho khác biệt rõ trong các số đo trước (mục 6.2i).
+
+| | Tổng FPS | Inference p50 (ms) | p95 (ms) | p99 (ms) | FPS mỗi worker | FPS mỗi thread |
+|---|---|---|---|---|---|---|
+| Z1 (4 × 2) | 9,40 ± 0,21 | 395,8 ± 4,5 | 406,4 ± 2,3 | 460,7 ± 69,4 | 2,35 | 1,18 |
+| **Y0 (8 × 2)** | **13,55 ± 0,15** | 565,6 ± 1,4 | 614,2 ± 12,7 | 725,8 ± 19,6 | 1,69 | 0,85 |
+| Y0 so với Z1 | **+44%** | **+43%** | | | | |
+
+- **Trần 9,5 đến 9,8 FPS ở mục 6.2h không phải giới hạn phần cứng:** tăng từ 4 lên 8 worker vẫn cho thêm 44%. Hiệu suất scale 4→8 worker khoảng 72%, giảm so với gần 100% ở 1→4 worker, nên tranh chấp đã xuất hiện (FPS mỗi worker giảm từ 2,35 xuống 1,69; độ trễ mỗi frame tăng 43%).
+- Load average lên 18 đến 21, vượt pool khoảng 15 core vật lý, nhưng throughput vẫn tăng. LPAR có 30 VCPU chia sẻ 15 core.
+- 13,55 FPS tương đương khoảng 1,17 TFLOP/s (13,55 × 86 GFLOP, theo ước lượng khối lượng ở mục 6.2), khoảng 43% mức 2,7 TFLOP/s của pool nếu scale GEMM thuần hoàn hảo.
+
+Tổng hợp mọi cấu hình đã đo (replay, FP32, cùng clip; số liệu lấy từ các phiên khác nhau, chỉ so sánh trực tiếp trong cùng một bảng đo):
+
+| Cấu hình | Tổng FPS | Inference p50 (ms) |
+|---|---|---|
+| 1 worker × 4 thread, spin 0 | 2,94–3,22 | 262–321 |
+| 1 worker × 4 thread, spin 1 | 4,07 | 242 |
+| 2 worker × 4 thread, spin 0 | 5,10 | 398 |
+| 2 worker × 4 thread, spin 1 | 8,25–8,45 | 220 |
+| 4 worker × 4 thread, spin 0 | 9,52 | 398 |
+| 4 worker × 4 thread, spin 1 | 9,83 | 328 |
+| 4 worker × 2 thread, spin 1 | 9,40–9,46 | 394–396 |
+| **8 worker × 2 thread, spin 0** | **13,55** | 566 |
+
+**Số camera ở FPS thấp (replay MJPG, chưa gồm chi phí giải mã camera live):** 13,55 FPS tổng tương đương khoảng 0,68 FPS mỗi camera với 20 camera, hoặc khoảng 0,27 FPS (một frame mỗi 3,7 giây) với 50 camera.
+
+### 6.3 Hạng mục phân tích ứng với từng hotspot
+
 | Chủ đề | Cách đo | Khi nào hành động |
 |---|---|---|
 | Packing / prepack trọng số | `perf` tách `MlasSgemmPackedOperation` hoặc symbol pack so với kernel | Khi chi phí pack lặp lại mỗi lần Run |
