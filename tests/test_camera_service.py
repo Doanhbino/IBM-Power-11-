@@ -164,6 +164,47 @@ class CameraService(unittest.TestCase):
         self.assertEqual(len(used), len(set(used)))
         self.assertEqual(len(workers), 4)
 
+    def shard_config(self, **source_extra):
+        worker = dict(cpus=[0, 1], threads=2, numa_node=0, sources=[dict(id='a', source=str(self.video), **source_extra)])
+        return self.config(worker)
+
+    def test_frame_shard_keys_are_validated_and_passed(self):
+        out = validate_config(self.shard_config(frame_stride=3, frame_offset=1), ROWS)
+        self.assertEqual((out[0]['sources'][0]['frame_stride'], out[0]['sources'][0]['frame_offset']), (3, 1))
+        for bad in (dict(frame_stride=0, frame_offset=0), dict(frame_stride=3, frame_offset=3),
+                    dict(frame_stride=3, frame_offset=-1), dict(frame_stride='3', frame_offset=0),
+                    dict(frame_stride=2)):   # offset required with stride
+            with self.assertRaises(ValueError):
+                validate_config(self.shard_config(**bad), ROWS)
+
+    def test_worker_plan_shards_one_camera_across_distinct_workers(self):
+        config = self.config(dict(cpus=[], threads=2, sources=[dict(id='cam', source=str(self.video))]))
+        workers = place(config, ROWS, threads=2, smt_limit=1, max_workers=8, workers_per_node=2, shards=3)['workers']
+        self.assertEqual(len(workers), 3)
+        sources = [s for w in workers for s in w['sources']]
+        self.assertEqual(sorted(s['id'] for s in sources), ['cam-s0', 'cam-s1', 'cam-s2'])
+        self.assertEqual(sorted((s['frame_stride'], s['frame_offset']) for s in sources), [(3, 0), (3, 1), (3, 2)])
+        self.assertTrue(all(len(w['sources']) == 1 for w in workers))     # shards of a camera never share a worker
+        validate_config(dict(binary='b', session=self.session, workers=workers), ROWS)   # the plan is launchable
+
+    def test_worker_plan_shards_two_cameras_keep_shards_apart(self):
+        config = self.config(dict(cpus=[], threads=2, sources=[dict(id='c1', source=str(self.video)),
+                                                                dict(id='c2', source=str(self.video))]))
+        workers = place(config, ROWS, threads=2, smt_limit=1, max_workers=4, workers_per_node=2, shards=3)['workers']
+        for camera in ('c1', 'c2'):
+            holders = [i for i, w in enumerate(workers) for s in w['sources'] if s['id'].startswith(camera + '-s')]
+            self.assertEqual(len(holders), len(set(holders)), camera)
+
+    def test_worker_plan_rejects_more_shards_than_workers(self):
+        config = self.config(dict(cpus=[], threads=2, sources=[dict(id='cam', source=str(self.video))]))
+        with self.assertRaises(ValueError):
+            place(config, ROWS, threads=2, smt_limit=1, max_workers=2, shards=3)
+
+    def test_worker_plan_default_does_not_shard(self):
+        config = self.config(dict(cpus=[], threads=2, sources=[dict(id='cam', source=str(self.video))]))
+        sources = [s for w in place(config, ROWS, threads=2, smt_limit=1, max_workers=2)['workers'] for s in w['sources']]
+        self.assertEqual(sources, [dict(id='cam', source=str(self.video))])
+
     def test_worker_plan_preserves_model_keys(self):
         config = self.config(self.worker([], 0, 'a'), self.worker([], 0, 'b', **YOLO))
         planned = place(config, ROWS, threads=2, smt_limit=1, max_workers=4)['workers']

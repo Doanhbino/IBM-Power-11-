@@ -1,6 +1,7 @@
 #include "rfdetr/bounded_queue.hpp"
 #include "rfdetr/camera.hpp"
 #include "rfdetr/decoder.hpp"
+#include "rfdetr/frame_shard.hpp"
 #include "rfdetr/ort_session.hpp"
 #include "rfdetr/placement.hpp"
 #include "rfdetr/preprocess.hpp"
@@ -88,6 +89,8 @@ struct Camera {
     std::thread capture;
     std::atomic<std::size_t> received{0}, errors{0}, reconnects{0};
     std::size_t processed{0}, expired{0};
+    rfdetr::FrameShard shard;  // keeps every stride-th frame of this camera; default keeps all
+    std::size_t grabbed{0};    // frames read from the stream, including those another shard owns (capture thread only)
     Camera(std::string name, std::string path, std::size_t capacity, bool live)
         : id(std::move(name)), source(std::move(path)),
           queue(capacity, live ? rfdetr::QueuePolicy::drop_oldest : rfdetr::QueuePolicy::block) {}
@@ -191,6 +194,12 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
             throw std::invalid_argument("Camera ID must be a safe identifier");
         for (const auto& camera : cameras) if (camera->id == id) throw std::invalid_argument("Duplicate camera ID");
         cameras.push_back(std::make_unique<Camera>(id, text(source, "source"), capacity, live));
+        if (!source["frame_stride"].empty() || !source["frame_offset"].empty()) {
+            if (source["frame_stride"].empty() || source["frame_offset"].empty())
+                throw std::invalid_argument("frame_stride and frame_offset must be set together");
+            cameras.back()->shard = rfdetr::FrameShard(static_cast<std::size_t>(integer(source, "frame_stride", 1, 1)),
+                                                       static_cast<std::size_t>(integer(source, "frame_offset", 0, 0)));
+        }
     }
     if (cameras.empty()) throw std::invalid_argument("No cameras configured");
     std::ofstream samples(out / "samples.csv"), detections(out / "detections.jsonl");
@@ -232,11 +241,16 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
                     if (capture.isOpened()) {
                         cv::Mat image;
                         const auto begin = Clock::now();
-                        const bool ok = capture.read(image);
+                        // grab() decodes; retrieve() converts to BGR. Frames owned by another shard skip the conversion.
+                        bool ok = capture.grab();
+                        const auto index = ok ? camera->grabbed++ : camera->grabbed;
+                        if (ok && !camera->shard.selected(index)) continue;
+                        if (ok) ok = capture.retrieve(image);
                         const auto received = Clock::now();
                         if (ok && !image.empty()) {
                             if (image.type() != CV_8UC3) throw std::runtime_error("Expected BGR uint8 decoded frame");
-                            const auto id = camera->received.fetch_add(1);
+                            camera->received.fetch_add(1);
+                            const auto id = index;  // source frame index: unique across the shards of one camera
                             const double pts = capture.get(cv::CAP_PROP_POS_MSEC);
                             if (!camera->queue.push({std::move(image), id, begin, received, std::isfinite(pts) ? pts : 0.0})) break;
                             notify();
@@ -321,7 +335,8 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
     for (const auto& camera : cameras) {
         const auto state = camera->queue.stats();
         processed += camera->processed;
-        result << "{" << "id" << camera->id << "received" << static_cast<double>(camera->received)
+        result << "{" << "id" << camera->id << "frame_stride" << static_cast<int>(camera->shard.stride)
+            << "frame_offset" << static_cast<int>(camera->shard.offset) << "received" << static_cast<double>(camera->received)
             << "processed" << static_cast<double>(camera->processed) << "queue_dropped" << static_cast<double>(state.dropped)
             << "shutdown_rejected" << static_cast<double>(camera->received - state.accepted)
             << "expired" << static_cast<double>(camera->expired) << "errors" << static_cast<double>(camera->errors)

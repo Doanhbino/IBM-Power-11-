@@ -1,5 +1,6 @@
 #include "rfdetr/bounded_queue.hpp"
 #include "rfdetr/decoder.hpp"
+#include "rfdetr/frame_shard.hpp"
 #include "rfdetr/gemm.hpp"
 #include "rfdetr/preprocess.hpp"
 #include "rfdetr/placement.hpp"
@@ -67,6 +68,21 @@ void memory_binding() {
         if (error.code().value() != EPERM && error.code().value() != ENOSYS) throw;  // sandbox forbids the syscall
     }
     throws([] { rfdetr::bind_memory(-1); });
+}
+void frame_shards() {
+    // Shards of one camera must partition the frame sequence: every index goes to exactly one shard.
+    for (std::size_t stride : {1, 2, 3, 5}) {
+        std::vector<int> hits(60, 0);
+        for (std::size_t offset = 0; offset < stride; ++offset) {
+            const rfdetr::FrameShard shard(stride, offset);
+            for (std::size_t index = 0; index < hits.size(); ++index) hits[index] += shard.selected(index);
+        }
+        for (int count : hits) require(count == 1, "Frame shards must partition the stream");
+    }
+    require(rfdetr::FrameShard{}.selected(7), "Default shard keeps every frame");
+    require(rfdetr::FrameShard(3, 1).selected(4) && !rfdetr::FrameShard(3, 1).selected(5), "Shard offset");
+    throws([] { rfdetr::FrameShard(0, 0); });
+    throws([] { rfdetr::FrameShard(3, 3); });
 }
 void capture_binding() {
     // A capture thread must be able to move to CPUs the (narrowed) worker thread no longer sees,
@@ -179,7 +195,7 @@ void shared_rhs(rfdetr::GemmBackend backend) {
 
 int main() {
     try {
-        queues(); adapter(); yolo(); packed_alignment(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
+        queues(); adapter(); yolo(); frame_shards(); packed_alignment(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
         require(!rfdetr::allowed_cpus().empty(), "Empty effective cpuset");
         throws([] { rfdetr::bind_cpus({-1}); });
         memory_binding(); capture_binding();

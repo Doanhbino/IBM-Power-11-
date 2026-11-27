@@ -116,6 +116,12 @@ def validate_config(config, rows):
                 raise ValueError('Replay requires existing local video files')
             if 'expected_frames' in source:
                 positive_integer(source['expected_frames'], 'expected_frames')
+            if 'frame_stride' in source or 'frame_offset' in source:
+                if not all(isinstance(source.get(key), int) and not isinstance(source.get(key), bool)
+                           for key in ('frame_stride', 'frame_offset')):
+                    raise ValueError('frame_stride and frame_offset must both be integers')
+                if source['frame_stride'] < 1 or not 0 <= source['frame_offset'] < source['frame_stride']:
+                    raise ValueError('frame shard needs stride >= 1 and 0 <= offset < stride')
             camera_ids.add(name)
         session = validate_model_session({**common, **{key: worker[key] for key in MODEL_KEYS if key in worker}})
         cfg = dict(session, cpus=sorted(cpus), threads=threads, sources=sources)
