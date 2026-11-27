@@ -153,6 +153,23 @@ class Agreement(unittest.TestCase):
         self.assertEqual(bands[(0.8, 1.01)]['precision'], 1.0)
         self.assertEqual(bands[(0.25, 0.4)]['precision'], 0.0)
 
+    def test_min_score_filters_each_side_before_matching(self):
+        ref = {i: [box(0, .9, 0), box(200, .3, 0)] for i in range(5)}
+        cand = {i: [box(0, .9, 0)] for i in range(5)}
+        _, loose = self.gate_agree(self.run_dir('a', ref), self.run_dir('b', cand))
+        self.assertEqual(loose['recall'], .5)
+        code, strict = self.gate_agree(self.run_dir('c', ref), self.run_dir('d', cand),
+                                       '--reference-min-score', '0.5', '--candidate-min-score', '0.5')
+        self.assertEqual((code, strict['recall'], strict['reference_detections']), (0, 1.0, 5))
+
+    def test_signed_score_shift_shows_direction(self):
+        ref = {i: [box(0, .5, 0), box(200, .3, 1)] for i in range(5)}
+        lower = {i: [box(0, .45, 0), box(200, .25, 1)] for i in range(5)}
+        _, r = self.gate_agree(self.run_dir('a', ref), self.run_dir('b', lower))
+        self.assertAlmostEqual(r['mean_signed_score_delta'], -0.05, places=6)   # candidate minus reference
+        bands = {tuple(b['range']): b for b in r['recall_by_reference_score']}
+        self.assertAlmostEqual(bands[(0.25, 0.4)]['mean_signed_score_delta'], -0.05, places=6)
+
     def test_thresholds_are_configurable(self):
         fewer = {i: dets[:8] for i, dets in self.many().items()}
         code, _ = self.gate_agree(self.run_dir('a', self.many()), self.run_dir('b', fewer), '--min-recall', '0.7')

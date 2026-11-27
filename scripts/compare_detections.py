@@ -13,13 +13,13 @@ import sys
 from run_record import atomic_json
 
 
-def load(run_dir):
+def load(run_dir, min_score=0.0):
     frames = {}
     for path in sorted(Path(run_dir).glob('worker-*/detections.jsonl')):
         with path.open() as stream:
             for line in stream:
                 row = json.loads(line)
-                frames[(row['camera_id'], row['frame_id'])] = row['detections']
+                frames[(row['camera_id'], row['frame_id'])] = [d for d in row['detections'] if d['score'] >= min_score]
     if not frames:
         raise SystemExit(f'No detections.jsonl under {run_dir}')
     return frames
@@ -47,14 +47,15 @@ def match_pairs(reference, candidate, iou_min):
             continue
         used_r.add(i)
         used_c.add(j)
-        matched.append((value, abs(reference[i]['score'] - candidate[j]['score']), i, j))
+        matched.append((value, abs(reference[i]['score'] - candidate[j]['score']), i, j,
+                        candidate[j]['score'] - reference[i]['score']))
     return matched
 
 
 def match(reference, candidate, iou_min):
     """Returns ([(iou, |score delta|)], unmatched reference count, unmatched candidate count)."""
     pairs = match_pairs(reference, candidate, iou_min)
-    return [(value, delta) for value, delta, _, _ in pairs], len(reference) - len(pairs), len(candidate) - len(pairs)
+    return [(value, delta) for value, delta, *_ in pairs], len(reference) - len(pairs), len(candidate) - len(pairs)
 
 
 def compare(reference, candidate, iou_min, score_tol, min_frames):
@@ -98,22 +99,26 @@ def agreement(reference, candidate, iou_min, min_frames, min_recall, min_precisi
     common = sorted(set(reference) & set(candidate))
     matched = ref_total = cand_total = 0
     iou_sum, score_delta_sum = 0.0, 0.0
-    ref_bands = {band: [0, 0] for band in SCORE_BANDS}       # [reference count, matched count]
+    signed_sum = 0.0
+    ref_bands = {band: [0, 0, 0.0] for band in SCORE_BANDS}   # [reference count, matched count, signed score delta sum]
     cand_bands = {band: [0, 0] for band in SCORE_BANDS}      # [candidate count, matched count]
     for key in common:
         pairs = match_pairs(reference[key], candidate[key], iou_min)
         matched += len(pairs)
         ref_total += len(reference[key])
         cand_total += len(candidate[key])
-        hit_r, hit_c = {i for _, _, i, _ in pairs}, {j for _, _, _, j in pairs}
-        for value, delta, _, _ in pairs:
+        hit_r, hit_c = {p[2] for p in pairs}, {p[3] for p in pairs}
+        signed_by_ref = {p[2]: p[4] for p in pairs}
+        for value, delta, _, _, signed in pairs:
             iou_sum += value
             score_delta_sum += delta
+            signed_sum += signed
         for index, det in enumerate(reference[key]):
             band = band_of(det['score'])
             if band:
                 ref_bands[band][0] += 1
                 ref_bands[band][1] += index in hit_r
+                ref_bands[band][2] += signed_by_ref.get(index, 0.0)
         for index, det in enumerate(candidate[key]):
             band = band_of(det['score'])
             if band:
@@ -125,8 +130,10 @@ def agreement(reference, candidate, iou_min, min_frames, min_recall, min_precisi
             'candidate_detections': cand_total, 'matched': matched, 'recall': recall, 'precision': precision,
             'mean_matched_iou': iou_sum / matched if matched else None,
             'mean_score_delta': score_delta_sum / matched if matched else None,
-            'recall_by_reference_score': [{'range': list(b), 'reference': n, 'matched': m, 'recall': m / n if n else None}
-                                          for b, (n, m) in ref_bands.items()],
+            'mean_signed_score_delta': signed_sum / matched if matched else None,   # candidate minus reference
+            'recall_by_reference_score': [{'range': list(b), 'reference': n, 'matched': m, 'recall': m / n if n else None,
+                                           'mean_signed_score_delta': s / m if m else None}
+                                          for b, (n, m, s) in ref_bands.items()],
             'precision_by_candidate_score': [{'range': list(b), 'candidate': n, 'matched': m, 'precision': m / n if n else None}
                                              for b, (n, m) in cand_bands.items()],
             'thresholds': {'iou_min': iou_min, 'min_recall': min_recall, 'min_precision': min_precision,
@@ -144,17 +151,22 @@ def main():
     parser.add_argument('--min-frames', type=int, default=100)
     parser.add_argument('--agreement', action='store_true',
                         help='tolerant mode for lower precision: recall/precision against the reference, IoU >= 0.5')
+    parser.add_argument('--reference-min-score', type=float, default=0.0,
+                        help='ignore reference detections below this score (e.g. a higher operating threshold)')
+    parser.add_argument('--candidate-min-score', type=float, default=0.0)
     parser.add_argument('--min-recall', type=float, default=0.95)
     parser.add_argument('--min-precision', type=float, default=0.95)
     args = parser.parse_args()
     if args.agreement:
         iou_min = args.iou_min if args.iou_min != 0.99 else 0.5     # strict default is not meant for this mode
-        result = agreement(load(args.reference), load(args.candidate), iou_min, args.min_frames,
+        result = agreement(load(args.reference, args.reference_min_score), load(args.candidate, args.candidate_min_score),
+                           iou_min, args.min_frames,
                            args.min_recall, args.min_precision)
         keys = ('frames_compared', 'reference_detections', 'candidate_detections', 'matched', 'recall', 'precision',
                 'mean_matched_iou', 'mean_score_delta', 'passed')
     else:
-        result = compare(load(args.reference), load(args.candidate), args.iou_min, args.score_tol, args.min_frames)
+        result = compare(load(args.reference, args.reference_min_score), load(args.candidate, args.candidate_min_score),
+                         args.iou_min, args.score_tol, args.min_frames)
         keys = ('frames_compared', 'frames_exact', 'matched', 'only_reference', 'only_candidate', 'min_matched_iou',
                 'max_score_delta', 'passed')
     result.update(reference=args.reference, candidate=args.candidate)
@@ -164,7 +176,9 @@ def main():
         print('recall by reference score band:')
         for band in result['recall_by_reference_score']:
             if band['reference']:
-                print(f"  {band['range'][0]:.2f}-{min(band['range'][1], 1.0):.2f}: {band['matched']}/{band['reference']} = {band['recall']:.3f}")
+                shift = band['mean_signed_score_delta']
+                print(f"  {band['range'][0]:.2f}-{min(band['range'][1], 1.0):.2f}: {band['matched']}/{band['reference']} = {band['recall']:.3f}"
+                      + (f"  mean score shift of matched {shift:+.3f}" if shift is not None else ''))
         print('precision by candidate score band:')
         for band in result['precision_by_candidate_score']:
             if band['candidate']:

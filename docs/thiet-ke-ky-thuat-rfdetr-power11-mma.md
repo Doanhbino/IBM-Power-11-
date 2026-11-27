@@ -591,6 +591,17 @@ A/B: replay clip 400 frame, binary `build-power-camera`, 1 worker × 4 thread, `
 
 **Đồng thuận với FP32** (`compare_detections.py --agreement`, 400 frame, IoU ≥ 0,5, cùng class slot): FP32 có 5765 detection, INT8 có 5511, khớp 5244. **Recall 0,910 (dưới ngưỡng đề xuất 0,95)**, precision 0,952, IoU trung bình của box khớp 0,938, chênh score trung bình 0,027. Cổng `passed: false`. Ngưỡng 0,95 do mình đề xuất, chưa được chủ dự án duyệt. Đây là mức đồng thuận với FP32, **không phải độ chính xác so với nhãn thật** (chưa có tập nhãn). Detection gần ngưỡng quyết định 0,25 dễ lật qua lại, nên `--agreement` giờ in thêm recall theo từng dải score của FP32.
 
+**Phân tầng theo score của FP32 [ĐC]** (từ `compare_detections.py --agreement`):
+
+| Dải score FP32 | Recall | Bỏ sót | Dải score INT8 | Precision |
+|---|---|---|---|---|
+| 0,25–0,40 | 0,643 (904/1406) | 502 | 0,25–0,40 | 0,792 (965/1219) |
+| 0,40–0,60 | 0,976 (655/671) | 16 | 0,40–0,60 | 0,980 (641/654) |
+| 0,60–0,80 | 0,997 (911/914) | 3 | 0,60–0,80 | 1,000 (961/961) |
+| 0,80–1,00 | 1,000 (2774/2774) | 0 | 0,80–1,00 | 1,000 (2677/2677) |
+
+502 trên 521 lần bỏ sót (96%) và 254 trên 267 detection thừa (95%) nằm ở dải 0,25–0,40, sát ngưỡng 0,25. Từ 0,6 trở lên INT8 chỉ bỏ sót 3 trong 3688 detection của FP32 và không thừa detection nào. Gộp lại, recall ở mức score FP32 từ 0,4 trở lên là 4340/4359 = 0,9956. **Chênh lệch chủ yếu là các detection sát ngưỡng lật qua lại, không phải mất vật thể chắc chắn**; recall tổng 0,91 vì thế đã khuếch đại vấn đề. Giới hạn: đây vẫn là đồng thuận với FP32, không phải độ chính xác thật; detection score thấp thường là vật nhỏ hoặc bị che và có thể là vật thể thật, nên mất 36% trong dải 0,25–0,40 chưa chắc vô hại.
+
 **Hiệu quả thấp hơn kỳ vọng lý thuyết:** lệnh `xvi8ger4` làm gấp 4 lần phép nhân-cộng so với `xvf32ger`, và GEMM chiếm khoảng 45–53% thời gian, nhưng thời gian mỗi frame chỉ giảm 15%. Chưa biết kernel nào chạy (QGEMM POWER10 hay đường khác) và chi phí của các nút Quantize/Dequantize thêm vào (210 và 337 nút); cần `perf` trên cấu hình Q.
 
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
