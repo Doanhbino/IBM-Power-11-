@@ -337,7 +337,7 @@ Từ đó:
 
 - Ở 182 GFLOP/s mỗi thread (MLAS, MatMul 1024³) [ĐC], phần GEMM tuyến tính tốn cỡ 0,3 giây trên 1 thread, hay cỡ 80 ms trên 4 thread nếu scale tuyến tính.
 - Inference đo được trung bình 336–351 ms trên 4 thread [ĐC].
-- **Giả thuyết cần phân xử bằng P2:** (H1) attention MatMul động không đi qua đường SGEMM có prepack, hoặc có M/N nhỏ làm hiệu suất thấp; (H2) phép từng phần tử (Softmax trên 6 head × T × T, LayerNorm, Erf) và copy (Transpose/Reshape) chiếm phần lớn; (H3) scale 4 thread kém trên LPAR shared, hoặc `allow_spinning=0` làm tăng chi phí đồng bộ; (H4) GridSample hoặc decoder tốn nhiều hơn dự kiến.
+- **Giả thuyết cần phân xử bằng P2:** (H1) attention MatMul động không đi qua đường SGEMM có prepack, hoặc có M/N nhỏ làm hiệu suất thấp; (H2) phép từng phần tử (Softmax trên 6 head × T × T, LayerNorm, Erf) và copy (Transpose/Reshape) chiếm phần lớn; (H3) scale 4 thread kém trên LPAR shared, hoặc `allow_spinning=0` làm tăng chi phí đồng bộ; (H4) GridSample hoặc decoder tốn nhiều hơn dự kiến; (H5) **thread capture/decode nằm cùng CPU mask với thread inference** ([camera_pipeline.cpp](../core/src/camera_pipeline.cpp) tạo capture thread trong cùng process đã bind). Capture trung bình khoảng 40 ms mỗi frame được giải mã trên chính 4 CPU đó, nên cạnh tranh với 4 thread ORT. Chưa đo ảnh hưởng.
 
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
@@ -356,6 +356,7 @@ Microbenchmark phải dùng shape từ RF-DETR thật và đo cả chi phí chu�
 | Ưu tiên | Thay đổi | Nút thắt nhắm tới | Giả thuyết | Correctness | Benchmark | Giữ khi |
 |---|---|---|---|---|---|---|
 | 1 | Số thread 2/4/6/8 (cùng node, smt-limit 1) | Scale thread (H3) | 4 thread chưa tối ưu; đã từng thấy 7 thread chậm hơn 4 ở model-only | Output bit-gần (chỉ khác thứ tự cộng) | `runs/ab-threads1` (đang chạy) | Lợi ích > 3,5% FPS, p95 không xấu đi vượt nhiễu |
+| 1b | Tách CPU cho capture/decode khỏi CPU của ORT (cần thêm tùy chọn `capture_cpus` vào worker, hiện chưa có) | H5 | Decode tranh CPU với inference | Output không đổi | A/B replay thật sẽ **không** cho thấy tác động vì clip MJPG decode rất rẻ; phải đo trên live RTSP (H.264) | Như trên |
 | 2 | `session.intra_op.allow_spinning` 0 → 1 | Đồng bộ thread (H3) | Spin giảm độ trễ đánh thức giữa các op song song | Như trên | A/B 3+3 lượt replay | Như trên, và CPU busy của LPAR không tăng gây hại cho worker khác |
 | 3 | smt-limit 2 ở cùng số core | Tận dụng core | Thread SMT phụ che độ trễ bộ nhớ của op không MMA | Như trên | A/B | Như trên |
 | 4 | Theo kết quả P2: fusion attention, kernel Softmax/LayerNorm VSX, hoặc custom op MMA cho shape attention | H1/H2 | Phụ thuộc bảng hotspot | So tensor với R-ref trên N frame thật | A/B và microbenchmark shape thật | Như trên và qua accuracy gate |
