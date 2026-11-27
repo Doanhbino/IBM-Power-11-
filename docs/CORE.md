@@ -46,6 +46,17 @@ BUILD_JOBS=4 bash scripts/build_core.sh power-camera build-camera
 
 Giữ `configure.log`, `build.log`, `ctest.log`, `compile_commands.json` và `build-manifest.json`. CTest chạy GEMM reference trên mọi máy và bổ sung kiểm GEMM MMA với FP64 oracle khi MMA compiled+exposed. Compile probe/build thành công không chứng minh RF-DETR đã chạy MMA.
 
+## Cấu hình khuyến nghị cho một camera live (RF-DETR, đã đo trên Power11)
+
+Số đo trên camera RTSP thật (24,9 FPS), một lượt mỗi cấu hình, chi tiết ở `docs/thiet-ke-ky-thuat-rfdetr-power11-mma.md` mục 6.2:
+
+- FP32, `session.allow_spinning=1`, `session.queue_capacity=1`.
+- `worker_plan.py --threads 4 --smt-limit 1 --max-workers 3 --shards 3`: một camera chia cho 3 worker, mỗi worker 4 thread trên một NUMA node riêng.
+- Kết quả: 11,1 đến 11,5 FPS xử lý, khoảng cách giữa hai kết quả liên tiếp p95 khoảng 215 ms, độ trễ từ lúc đọc frame đến kết quả p50 khoảng 359 ms và p95 khoảng 440 ms. Cấu hình này dùng khoảng 12 thread tính toán quay vòng; trên LPAR shared nó lấy CPU của phân vùng khác.
+- Cần camera cho phép ít nhất 3 kết nối đồng thời (camera đã thử chấp nhận).
+- `scripts/live_summary.py runs/<chiến-dịch>` in FPS, độ mượt và độ trễ theo từng camera, gộp các mảnh.
+- INT8 (`scripts/quantize_int8.py`) nhanh hơn khoảng 15% ở phần inference nhưng chưa đạt ngưỡng đồng thuận với FP32 và chưa có dữ liệu nhãn; chưa dùng làm cấu hình chuẩn.
+
 ## Hai loại model (RF-DETR / YOLO11)
 
 Mỗi worker chọn model bằng `session.model_type` (`rfdetr` mặc định, hoặc `yolo11`). Config mẫu giao thông 4 lớp (Car, Motorcycle, Primitive_Vehicle, person):

@@ -25,14 +25,15 @@
     ],
     "mode": "live",
     "warmup": 30,
-    "queue_capacity": 2,
+    "queue_capacity": 1,
     "capture_timeout_ms": 5000,
     "reconnect_attempts": 3,
     "reconnect_delay_ms": 1000,
     "max_frame_age_ms": 0,
     "max_frames_per_camera": 0,
     "duration_s": 60,
-    "profile": 0
+    "profile": 0,
+    "allow_spinning": 1
   },
   "workers": [
     {

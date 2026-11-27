@@ -666,7 +666,17 @@ Cấu hình: FP32, `allow_spinning=1`, 3 mảnh × 4 thread (NUMA node 0, 1, 2),
 
 So với R0 (live, 1 worker, 4 thread, spinning tắt, 2,73 FPS): tốc độ xử lý tăng khoảng 4,2 lần.
 
-Thời gian chờ trong hàng đợi (khoảng 184 ms) chiếm gần 40% độ trễ đọc đến kết quả. Với `queue_capacity=2` và chính sách bỏ frame cũ nhất (`drop_oldest`), khi worker rảnh nó lấy frame *cũ nhất* trong hai frame đang chờ. Mỗi mảnh nhận một frame mỗi khoảng 120 ms (25 FPS chia 3) mà xử lý mất khoảng 240 ms, nên frame cũ nhất đã chờ 120 đến 240 ms. Với `queue_capacity=1` frame chờ chỉ còn tối đa một khoảng nhận (khoảng 0 đến 120 ms). Giả thuyết chưa kiểm chứng; kiểm bằng cách đổi một khóa cấu hình.
+Thời gian chờ trong hàng đợi (khoảng 184 ms) chiếm gần 40% độ trễ đọc đến kết quả. Với `queue_capacity=2` và chính sách bỏ frame cũ nhất (`drop_oldest`), khi worker rảnh nó lấy frame *cũ nhất* trong hai frame đang chờ. Mỗi mảnh nhận một frame mỗi khoảng 120 ms (25 FPS chia 3) mà xử lý mất khoảng 240 ms, nên frame cũ nhất đã chờ 120 đến 240 ms. Với `queue_capacity=1` frame chờ chỉ còn tối đa một khoảng nhận (khoảng 0 đến 120 ms). Giả thuyết đó đã được kiểm chứng bằng cách đổi một khóa cấu hình (`queue_capacity` 2 → 1, một lượt live khác, cùng camera và cấu hình còn lại):
+
+| | `queue_capacity=2` | `queue_capacity=1` |
+|---|---|---|
+| Queue age p50 / p95 (ms) | 184,5 / 234,5 | **61,4 / 117,0** |
+| Đọc frame đến kết quả p50 / p95 / p99 / max (ms) | 477,5 / 541,4 / 573,6 / 638,3 | **358,7 / 440,1 / 498,1 / 578,9** |
+| Khoảng cách giữa hai kết quả p50 / p95 / max (ms) | 65 / 215 / 281 | 75 / 214 / 275 |
+| Inference p50 (ms) | 240,5 | 244,0 |
+| Frame xử lý | 698 | 679 |
+
+Độ trễ trung vị giảm 119 ms (25%) mà độ mượt và inference không đổi; số frame xử lý giảm 3%, trong nhiễu của cảnh giữa hai lượt (hai lượt live khác nhau, mỗi cấu hình một lượt). Với chính sách bỏ frame cũ nhất của chế độ live, hàng đợi dài hơn một không có lợi.
 
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
