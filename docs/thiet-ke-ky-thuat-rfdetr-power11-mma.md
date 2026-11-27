@@ -484,6 +484,29 @@ Replay clip 400 frame, mỗi worker một camera (hai camera cùng clip), mỗi 
 - **Chưa biết điểm bão hòa.** 2 worker × 4 thread = 8 thread quay vòng, chưa chạm giới hạn pool khoảng 15 core. Với 4 worker (16 thread) vượt pool.
 - **Cái giá:** load average đạt 14,6 khi spinning, trên LPAR shared uncapped (entitlement 14,5). Tác động lên các phân vùng khác chưa đo.
 
+### 6.2h Bốn worker đồng thời: điểm bão hòa ([ĐC], `runs/ab-multi4`)
+
+Replay clip 400 frame, bốn worker × 4 thread, mỗi worker một NUMA node (0 đến 3) và một camera, 6 lượt xen kẽ, mỗi lượt 1600 mẫu, 0 frame bị bỏ, 0 lỗi. Load average 6 đến 21,4.
+
+| | Tổng FPS | Inference p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|
+| `allow_spinning=0` (Q0) | 9,52 ± 0,01 | 398,2 ± 0,4 | 449,5 ± 3,2 | 479,8 ± 4,8 |
+| `allow_spinning=1` (Q1) | 9,83 ± 0,07 | 328,5 ± 3,8 | 446,8 ± 0,6 | 478,8 ± 1,4 |
+| Thay đổi | +3,3% (sát ngưỡng nhiễu) | −17,5% | −0,6% | −0,2% |
+
+Tổng hợp theo số worker (tổng FPS, replay, FP32, 4 thread mỗi worker):
+
+| Worker | `allow_spinning=0` | `allow_spinning=1` | FPS mỗi thread quay vòng (spin=1) |
+|---|---|---|---|
+| 1 | 2,94 | 4,07 | 1,02 |
+| 2 | 5,10 | 8,45 | 1,06 |
+| 4 | 9,52 | 9,83 | 0,61 |
+
+- **Spinning mất lợi thế ở 4 worker.** Từ 2 lên 4 worker, tắt spinning tăng 1,87 lần (hiệu suất khoảng 93%), bật spinning chỉ tăng 1,16 lần. Với 16 thread quay vòng vượt số core vật lý của pool (khoảng 15), hai chế độ hội tụ về cùng khoảng 9,5 đến 9,8 FPS tổng. Load average vượt 15 (tới 21,4), phù hợp với việc pool bão hòa.
+- **Điểm hiệu quả nhất theo FPS trên mỗi thread bận:** 2 worker bật spinning (8,45 FPS với 8 thread, khoảng 1,06 FPS mỗi thread), cao hơn rõ so với 4 worker bật spinning (khoảng 0,61).
+- **Giới hạn tổng của cấu hình này khoảng 9,5 đến 9,8 FPS** (replay, FP32, 4 camera). Cấu hình tắt spinning đạt gần mức đó với ít CPU hơn, nên thân thiện hơn với các phân vùng khác. Độ lệch rất nhỏ giữa các lượt (0,01 ở Q0) gợi ý một trần cứng chứ không phải nhiễu ngẫu nhiên, nhưng chưa biết trần đó là CPU, băng thông bộ nhớ hay hypervisor.
+- **Chưa kiểm:** 3 worker; nhiều worker hơn với ít thread mỗi worker (ví dụ 4 worker × 2 thread, cùng 8 thread với cấu hình 2 × 4); chi phí giải mã H.264 live khi nhiều camera (replay MJPG gần như miễn phí, nên số liệu này **chưa gồm** chi phí đó).
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
