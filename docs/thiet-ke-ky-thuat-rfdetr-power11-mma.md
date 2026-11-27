@@ -552,6 +552,31 @@ Tổng hợp mọi cấu hình đã đo (replay, FP32, cùng clip; số liệu l
 
 **Số camera ở FPS thấp (replay MJPG, chưa gồm chi phí giải mã camera live):** 13,55 FPS tổng tương đương khoảng 0,68 FPS mỗi camera với 20 camera, hoặc khoảng 0,27 FPS (một frame mỗi 3,7 giây) với 50 camera.
 
+### 6.2k Chi phí giải mã một camera RTSP live ([ĐC], `scripts/thread_cpu.py`)
+
+Một worker, camera RTSP thật (kênh 101 của camera; codec và độ phân giải chưa biết), 4 thread ORT với `allow_spinning=0` trên CPU `0,32,64,96`, thread capture và FFmpeg trên CPU riêng `128,160,192,224` (`--capture-cpus 4`). Mẫu 30 giây giữa lúc chạy, 75 giây hoạt động, 1870 frame nhận (24,9 FPS), 217 frame được xử lý (2,9 FPS), bỏ 88%.
+
+| Nhóm thread | Số thread | CPU (phần trăm của một core) |
+|---|---|---|
+| Capture và giải mã (mặt nạ `128,160,192,224`) | 8 | **18,5%** (thread lớn nhất 3,4%) |
+| Thread tính toán ORT | 4 | 236,2% (87,6 / 54,3 / 47,8 / 46,4) |
+
+- **Giải mã một camera tốn khoảng 0,185 core, tức khoảng 7,4 ms CPU mỗi frame nhận** (0,185 core ÷ 24,9 FPS). Gồm đọc mạng RTSP, giải mã bằng phần mềm của OpenCV/FFmpeg và các thread phụ của nó. Đo một camera, một cửa sổ 30 giây; độ phân giải và codec không rõ nên không suy rộng sang camera khác.
+- **Chi phí suy luận trong lượt này khoảng 0,81 core-giây mỗi frame được xử lý** (2,36 core ÷ 2,9 FPS), khớp với ước lượng 0,78 suy từ `perf` ở mục 6.2k trước đó. Mô hình tắt spinning vẫn có thread chính bận hơn các thread phụ (87,6% so với khoảng 46 đến 54%), giống mục 6.2e.
+- **Nhân với số camera:** giải mã tốn khoảng 0,185 × N core. Với N = 50 camera là khoảng 9,3 core, bằng khoảng 62% pool 15 core, **trước khi chạy một frame suy luận nào**. Camera phát khoảng 25 FPS, và phải giải mã mọi frame dù chỉ phân tích vài frame.
+
+Mô hình tỉ lệ thô (giả định throughput tỉ lệ thuận với số core còn lại sau giải mã; mốc 13,55 FPS đạt khi dùng gần hết pool, mục 6.2j; chưa kiểm chứng bằng đo trực tiếp):
+
+| Số camera | Core dành cho giải mã | Tổng FPS suy luận còn lại | FPS mỗi camera |
+|---|---|---|---|
+| 10 | 1,9 | khoảng 11,9 | khoảng 1,2 |
+| 20 | 3,7 | khoảng 10,2 | khoảng 0,51 |
+| 30 | 5,6 | khoảng 8,5 | khoảng 0,28 |
+| 50 | 9,3 | khoảng 5,2 | khoảng 0,10 (một frame mỗi 10 giây) |
+| 80 | 14,8 | gần 0 | gần 0 |
+
+Giảm phần này: dùng luồng phụ (sub-stream) độ phân giải thấp hơn nếu camera có (chưa kiểm chứng camera này có và chất lượng ra sao); chỉ giải mã khi cần; hoặc tăng số core cho LPAR.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
