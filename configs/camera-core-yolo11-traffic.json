@@ -1,0 +1,41 @@
+{
+  "binary": "build/rfdetr_camera",
+  "runtime_library": "/home/models/stack/onnxruntime-1.27.0/lib/libonnxruntime.so.1.27.0",
+  "require_mma": false,
+  "timeout_s": 600,
+  "session": {
+    "model": "/home/models/models/yolo11m_traffic.onnx",
+    "input_name": "images",
+    "height": 640,
+    "width": 640,
+    "mode": "live",
+    "warmup": 30,
+    "queue_capacity": 2,
+    "capture_timeout_ms": 5000,
+    "reconnect_attempts": 3,
+    "reconnect_delay_ms": 1000,
+    "max_frame_age_ms": 0,
+    "max_frames_per_camera": 0,
+    "duration_s": 60,
+    "profile": 0,
+    "model_type": "yolo11",
+    "output_name": "output0",
+    "num_classes": 4,
+    "conf_threshold": 0.25,
+    "iou_threshold": 0.7,
+    "max_det": 300
+  },
+  "workers": [
+    {
+      "cpus": [],
+      "numa_node": 0,
+      "threads": 4,
+      "sources": [
+        {
+          "id": "camera-0",
+          "source": "rtsp://<user>:<password>@<host>:554/Streaming/Channels/101/"
+        }
+      ]
+    }
+  ]
+}

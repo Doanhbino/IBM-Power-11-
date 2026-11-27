@@ -46,6 +46,15 @@ BUILD_JOBS=4 bash scripts/build_core.sh power-camera build-camera
 
 Giữ `configure.log`, `build.log`, `ctest.log`, `compile_commands.json` và `build-manifest.json`. CTest chạy GEMM reference trên mọi máy và bổ sung kiểm GEMM MMA với FP64 oracle khi MMA compiled+exposed. Compile probe/build thành công không chứng minh RF-DETR đã chạy MMA.
 
+## Hai loại model (RF-DETR / YOLO11)
+
+Mỗi worker chọn model bằng `session.model_type` (`rfdetr` mặc định, hoặc `yolo11`). Config mẫu giao thông 4 lớp (Car, Motorcycle, Primitive_Vehicle, person):
+
+- `configs/camera-core-rfdetr-traffic.json`: RF-DETR Medium, input 576, `background_index=4` (slot cuối là background), mean/std ImageNet.
+- `configs/camera-core-yolo11-traffic.json`: YOLO11m, input 640, output `output0` `[1,8,8400]`, `num_classes=4`, `conf_threshold`, `iou_threshold`, `max_det` bắt buộc ghi rõ; letterbox pad 114 và NMS theo từng lớp.
+
+Cả hai để `source` là URL giả và `mode=live`, `duration_s=60`. Sửa `source` (RTSP hoặc video, mode `replay`), đường dẫn model nếu khác `/home/models/models/`, rồi chạy `worker_plan.py` trên server như phần dưới. Số lớp lệch với model sẽ báo lỗi trước khi đo. Không commit URL RTSP có mật khẩu.
+
 ## Camera replay/live
 
 1. Sao chép `configs/camera-core.json`, sửa model, SDK library, binary và nguồn video. Xác nhận input/output/background/category mapping đúng checkpoint. `cpus: []` trong template cố ý chưa hợp lệ.

@@ -1,0 +1,50 @@
+{
+  "binary": "build/rfdetr_camera",
+  "runtime_library": "/home/models/stack/onnxruntime-1.27.0/lib/libonnxruntime.so.1.27.0",
+  "require_mma": false,
+  "timeout_s": 600,
+  "session": {
+    "model": "/home/models/models/rfdetr_medium_traffic_576.onnx",
+    "input_name": "input",
+    "boxes_output": "dets",
+    "logits_output": "labels",
+    "height": 576,
+    "width": 576,
+    "background_index": 4,
+    "top_k": 300,
+    "threshold": 0.25,
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "mode": "live",
+    "warmup": 30,
+    "queue_capacity": 2,
+    "capture_timeout_ms": 5000,
+    "reconnect_attempts": 3,
+    "reconnect_delay_ms": 1000,
+    "max_frame_age_ms": 0,
+    "max_frames_per_camera": 0,
+    "duration_s": 60,
+    "profile": 0
+  },
+  "workers": [
+    {
+      "cpus": [],
+      "numa_node": 0,
+      "threads": 4,
+      "sources": [
+        {
+          "id": "camera-0",
+          "source": "rtsp://<user>:<password>@<host>:554/Streaming/Channels/101/"
+        }
+      ]
+    }
+  ]
+}
