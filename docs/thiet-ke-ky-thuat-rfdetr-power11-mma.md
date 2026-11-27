@@ -466,7 +466,7 @@ FPS từng lượt S1: 4,25 / 3,62 / 4,34 (suy ra lượt 02 từ trung bình); 
 
 **Cái giá chưa đo:** spinning làm các thread quay vòng chiếm CPU khi rảnh. Chưa đo mức CPU tiêu thụ thêm. Trên LPAR shared uncapped (entitlement 14,5, pool 15 core) đó là CPU lấy khỏi các phân vùng khác. Chưa thấy ảnh hưởng này trong số đo, và phép đo chạy khi không có tải nào khác của ta.
 
-**Chưa kiểm:** (a) correctness (kết quả phải giống hệt vì phân chia phép tính không đổi, nhưng chưa chạy `compare_detections.py`); (b) cơ chế (phân bố chu kỳ theo thread với `allow_spinning=1`); (c) trên live RTSP với `capture_cpus`; (d) số thread tối ưu khi bật spinning (kết quả sweep 2/4/6/8 ở mục 6.2d là với spinning tắt).
+**Correctness đã kiểm [ĐC]:** `compare_detections.py` giữa `01-S0` và `02-S1`: 400 frame so sánh, 400 frame khớp hoàn toàn, 5765 detection ghép được, `only_reference=0`, `only_candidate=0`, IoU nhỏ nhất 1,0, chênh score lớn nhất 0,0. Đầu ra giống hệt từng bit ở mức detection sau decode (chưa so tensor thô). **Chưa kiểm:** (b) cơ chế (phân bố chu kỳ theo thread với `allow_spinning=1`); (c) trên live RTSP với `capture_cpus`; (d) số thread tối ưu khi bật spinning (kết quả sweep 2/4/6/8 ở mục 6.2d là với spinning tắt).
 
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
