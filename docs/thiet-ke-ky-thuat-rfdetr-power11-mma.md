@@ -365,6 +365,48 @@ Từ đó:
 
 **Còn thiếu để lập bảng hotspot đầy đủ:** tổng thời gian theo loại operator trên toàn graph (không chỉ 25 node), danh sách symbol đứng sau `MlasSgemmKernelPOWER10` trong `perf`, và stack của đường `MatMul` động.
 
+### 6.2c Phân bổ thời gian theo toàn graph và theo `perf` ([ĐC])
+
+**Theo ORT profile (tổng thời gian node, 316,5 ms/frame, có warmup, có thể chồng nhau; từ lượt profile cũ, binary `build-camera`):**
+
+| Operator | Số node | ms/frame | Tỉ trọng |
+|---|---|---|---|
+| Gemm | 122 | 142,9 | 45,1% |
+| LayerNormalization | 38 | 53,1 | **16,8%** |
+| Softmax | 20 | 22,3 | 7,0% |
+| Gelu | 12 | 21,8 | 6,9% |
+| MatMul (động) | 16 | 21,3 | 6,7% |
+| FusedMatMul | 16 | 18,8 | 5,9% |
+| Conv | 9 | 11,9 | 3,8% |
+| Transpose | 114 | 9,0 | 2,8% |
+| Còn lại (Add, Mul, Reshape, GridSample, SkipLayerNorm, Slice) | | 11,8 | 3,7% |
+
+**Theo `perf` (chu kỳ của cả process `rfdetr_camera`, lượt replay không bật profile ORT, 55 672 mẫu):**
+
+| Nhóm | % chu kỳ | MMA? |
+|---|---|---|
+| `MlasSgemmKernelPOWER10` | 46,36 | **Có** (đã xác minh tầng 3) |
+| `L_Rows8` | 7,10 | Nhiều khả năng là nhãn nội bộ của cùng kernel assembly (tên có dạng nhãn; trong lượt MatMul tổng hợp trước đó nó đứng ngay sau kernel). **[GT]** chưa xác nhận bằng `perf annotate` |
+| SGEMM phụ (`CopyPackB`, `PackedOperation`, `Operation`) | 1,36 | Chuẩn bị dữ liệu |
+| `GemmBroadcastBias` | 1,25 | Không |
+| **LayerNorm** (`ComputeJob<float,float,void>` 15,85, contrib `ComputeJob` 0,25, batch parallel 0,29) | **16,39** | **Không** |
+| Gelu/Erf (`MlasErfKernel` 5,51, `MlasGeluErfKernel` 1,43) | 6,94 | Không |
+| Softmax (`SumExp` 4,90, `ReduceMaximum` 0,97, `Output` 0,50) | 6,37 | Không |
+| Thread pool `RunInParallel` | 3,49 | Đồng bộ thread |
+| Transpose (`MlasTransposeThreaded` 1,19, `StridedCopy` 0,65) | 1,84 | Không |
+| GridSample bilinear | 1,21 | Không |
+| `Preprocessor::run`, `memcpy`, Logistic, Add/Mul | 3,13 | Không |
+| `libavcodec` (decode MJPG) | khoảng 0,2 | Không (replay MJPG rẻ; H.264 live khác) |
+
+Hai nguồn khớp nhau: Gemm, MatMul và FusedMatMul chiếm 57,7% thời gian node; SGEMM chiếm khoảng 55–57% chu kỳ. LayerNorm khớp 16,8% so với 16,4%; Softmax 7,0% so với 6,4%; Gelu 6,9% so với 6,9%.
+
+**Kết luận từ số đo, không phải dự đoán.**
+1. Kernel MMA là khoảng 55% chu kỳ. **Khoảng 40% còn lại không thuộc đường MMA**, và LayerNorm là mục không-MMA lớn nhất (khoảng 16%), lớn hơn cả Softmax và Gelu cộng lại một chút.
+2. Đồng bộ thread (RunInParallel, 3,5%) không lớn. Khoảng trống 41–61% so với scale tuyến tính (mục 6.2b) vì vậy nhiều khả năng nằm ở chỗ khác: mất cân bằng chia việc giữa các thread, băng thông bộ nhớ hoặc nhiễu LPAR. **Chưa đo.**
+3. Giới hạn Amdahl với số đo này: kernel SGEMM nhanh thêm 20% chỉ giảm tổng thời gian khoảng 11%. Nếu LayerNorm nhanh gấp 5 lần thì giảm khoảng 13%. Hai thay đổi này cho lợi ích cùng cỡ.
+4. Nguyên nhân LayerNorm chậm chưa biết: mã nguồn ORT trên GitHub trả 404 nên chưa đọc được `layer_norm_impl`. Không suy đoán cơ chế.
+5. Ba giả thuyết cần xét lại: H2 (phép từng phần tử đáng kể) **được ủng hộ**; H1 (attention MatMul động không đi qua SGEMM) **không bị bác**: có `MatMul`/`FusedMatMul` 12,6% thời gian node nhưng stack của chúng chưa thấy; H3 (đồng bộ thread) **bị yếu đi** vì chỉ 3,5%.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
