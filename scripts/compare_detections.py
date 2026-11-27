@@ -35,8 +35,8 @@ def iou(a, b):
     return inter / union if union > 0 else 0.0
 
 
-def match(reference, candidate, iou_min):
-    """Greedy highest-IoU matching within the same class slot. Returns pairs and unmatched counts."""
+def match_pairs(reference, candidate, iou_min):
+    """Greedy highest-IoU matching within the same class slot. Returns [(iou, |score delta|, ref index, cand index)]."""
     pairs = sorted(((iou(r['xyxy'], c['xyxy']), i, j) for i, r in enumerate(reference)
                     for j, c in enumerate(candidate) if r['class_slot'] == c['class_slot']), reverse=True)
     used_r, used_c, matched = set(), set(), []
@@ -47,8 +47,14 @@ def match(reference, candidate, iou_min):
             continue
         used_r.add(i)
         used_c.add(j)
-        matched.append((value, abs(reference[i]['score'] - candidate[j]['score'])))
-    return matched, len(reference) - len(used_r), len(candidate) - len(used_c)
+        matched.append((value, abs(reference[i]['score'] - candidate[j]['score']), i, j))
+    return matched
+
+
+def match(reference, candidate, iou_min):
+    """Returns ([(iou, |score delta|)], unmatched reference count, unmatched candidate count)."""
+    pairs = match_pairs(reference, candidate, iou_min)
+    return [(value, delta) for value, delta, _, _ in pairs], len(reference) - len(pairs), len(candidate) - len(pairs)
 
 
 def compare(reference, candidate, iou_min, score_tol, min_frames):
@@ -74,27 +80,55 @@ def compare(reference, candidate, iou_min, score_tol, min_frames):
             'passed': passed}
 
 
+SCORE_BANDS = ((0.25, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01))
+
+
+def band_of(score):
+    for low, high in SCORE_BANDS:
+        if low <= score < high:
+            return (low, high)
+    return None
+
+
 def agreement(reference, candidate, iou_min, min_frames, min_recall, min_precision):
     """Lower-precision check: what fraction of the reference detections does the candidate reproduce (recall), and
     what fraction of the candidate's detections exist in the reference (precision). Same class slot, IoU >= iou_min.
+    Also reported per score band, because detections near the decision threshold flip with tiny numeric changes.
     This is agreement with the reference model, NOT accuracy against ground truth."""
     common = sorted(set(reference) & set(candidate))
     matched = ref_total = cand_total = 0
     iou_sum, score_delta_sum = 0.0, 0.0
+    ref_bands = {band: [0, 0] for band in SCORE_BANDS}       # [reference count, matched count]
+    cand_bands = {band: [0, 0] for band in SCORE_BANDS}      # [candidate count, matched count]
     for key in common:
-        pairs, only_r, only_c = match(reference[key], candidate[key], iou_min)
+        pairs = match_pairs(reference[key], candidate[key], iou_min)
         matched += len(pairs)
         ref_total += len(reference[key])
         cand_total += len(candidate[key])
-        for value, delta in pairs:
+        hit_r, hit_c = {i for _, _, i, _ in pairs}, {j for _, _, _, j in pairs}
+        for value, delta, _, _ in pairs:
             iou_sum += value
             score_delta_sum += delta
+        for index, det in enumerate(reference[key]):
+            band = band_of(det['score'])
+            if band:
+                ref_bands[band][0] += 1
+                ref_bands[band][1] += index in hit_r
+        for index, det in enumerate(candidate[key]):
+            band = band_of(det['score'])
+            if band:
+                cand_bands[band][0] += 1
+                cand_bands[band][1] += index in hit_c
     recall = matched / ref_total if ref_total else 1.0
     precision = matched / cand_total if cand_total else 1.0
     return {'mode': 'agreement', 'frames_compared': len(common), 'reference_detections': ref_total,
             'candidate_detections': cand_total, 'matched': matched, 'recall': recall, 'precision': precision,
             'mean_matched_iou': iou_sum / matched if matched else None,
             'mean_score_delta': score_delta_sum / matched if matched else None,
+            'recall_by_reference_score': [{'range': list(b), 'reference': n, 'matched': m, 'recall': m / n if n else None}
+                                          for b, (n, m) in ref_bands.items()],
+            'precision_by_candidate_score': [{'range': list(b), 'candidate': n, 'matched': m, 'precision': m / n if n else None}
+                                             for b, (n, m) in cand_bands.items()],
             'thresholds': {'iou_min': iou_min, 'min_recall': min_recall, 'min_precision': min_precision,
                            'min_frames': min_frames},
             'passed': len(common) >= min_frames and recall >= min_recall and precision >= min_precision}
@@ -126,6 +160,15 @@ def main():
     result.update(reference=args.reference, candidate=args.candidate)
     atomic_json(args.output, result)
     print(json.dumps({key: result[key] for key in keys}))
+    if args.agreement:
+        print('recall by reference score band:')
+        for band in result['recall_by_reference_score']:
+            if band['reference']:
+                print(f"  {band['range'][0]:.2f}-{min(band['range'][1], 1.0):.2f}: {band['matched']}/{band['reference']} = {band['recall']:.3f}")
+        print('precision by candidate score band:')
+        for band in result['precision_by_candidate_score']:
+            if band['candidate']:
+                print(f"  {band['range'][0]:.2f}-{min(band['range'][1], 1.0):.2f}: {band['matched']}/{band['candidate']} = {band['precision']:.3f}")
     sys.exit(0 if result['passed'] else 2)
 
 

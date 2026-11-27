@@ -577,6 +577,22 @@ Mô hình tỉ lệ thô (giả định throughput tỉ lệ thuận với số 
 
 Giảm phần này: dùng luồng phụ (sub-stream) độ phân giải thấp hơn nếu camera có (chưa kiểm chứng camera này có và chất lượng ra sao); chỉ giải mã khi cần; hoặc tăng số core cho LPAR.
 
+### 6.2l INT8 cho các lớp tuyến tính ([ĐC], `runs/ab-int8`, `runs/agree-int8.json`)
+
+Công cụ: `scripts/quantize_int8.py` (QDQ, trọng số int8 theo kênh, activation uint8, hiệu chỉnh `minmax` bằng 64 frame đều của `traffic-clip.avi`, cùng tiền xử lý như đường camera). 123 lớp (119 MatMul và 4 Gemm có trọng số hằng) được lượng tử hóa; 32 MatMul attention (hai đầu vào đều là activation) giữ FP32. Model 46,3 MB so với 128 MB. Quantize bằng ORT 1.27.0 trên server (IR 8, opset 17).
+
+A/B: replay clip 400 frame, binary `build-power-camera`, 1 worker × 4 thread, `allow_spinning=1`, 6 lượt xen kẽ (F,Q,Q,F,F,Q), 400 mẫu mỗi lượt.
+
+| | FPS | Inference p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|
+| F (FP32) | 4,12 ± 0,17 | 220,3 ± 0,2 | 271,1 ± 34,5 | 278,1 ± 36,0 |
+| Q (INT8) | **5,08 ± 0,01** | **187,4 ± 0,5** | **189,6 ± 0,4** | **192,7 ± 1,9** |
+| Thay đổi | **+23%** | −15% | −30% | −31% |
+
+**Đồng thuận với FP32** (`compare_detections.py --agreement`, 400 frame, IoU ≥ 0,5, cùng class slot): FP32 có 5765 detection, INT8 có 5511, khớp 5244. **Recall 0,910 (dưới ngưỡng đề xuất 0,95)**, precision 0,952, IoU trung bình của box khớp 0,938, chênh score trung bình 0,027. Cổng `passed: false`. Ngưỡng 0,95 do mình đề xuất, chưa được chủ dự án duyệt. Đây là mức đồng thuận với FP32, **không phải độ chính xác so với nhãn thật** (chưa có tập nhãn). Detection gần ngưỡng quyết định 0,25 dễ lật qua lại, nên `--agreement` giờ in thêm recall theo từng dải score của FP32.
+
+**Hiệu quả thấp hơn kỳ vọng lý thuyết:** lệnh `xvi8ger4` làm gấp 4 lần phép nhân-cộng so với `xvf32ger`, và GEMM chiếm khoảng 45–53% thời gian, nhưng thời gian mỗi frame chỉ giảm 15%. Chưa biết kernel nào chạy (QGEMM POWER10 hay đường khác) và chi phí của các nút Quantize/Dequantize thêm vào (210 và 337 nút); cần `perf` trên cấu hình Q.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |

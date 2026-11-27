@@ -134,6 +134,25 @@ class Agreement(unittest.TestCase):
         self.assertEqual(r['recall'], 1.0)
         self.assertAlmostEqual(r['precision'], 10 / 11, places=4)
 
+    def test_recall_is_reported_by_reference_score_band(self):
+        # Every frame: two confident detections (0.9) and two borderline ones (0.3). The candidate drops the borderline ones.
+        ref = {i: [box(0, .9, 0), box(100, .9, 1), box(200, .3, 0), box(300, .3, 1)] for i in range(5)}
+        cand = {i: [box(0, .9, 0), box(100, .9, 1)] for i in range(5)}
+        _, r = self.gate_agree(self.run_dir('a', ref), self.run_dir('b', cand))
+        bands = {tuple(b['range']): b for b in r['recall_by_reference_score']}
+        self.assertEqual(r['recall'], .5)
+        self.assertEqual(bands[(0.8, 1.01)]['recall'], 1.0)
+        self.assertEqual(bands[(0.25, 0.4)]['recall'], 0.0)
+        self.assertEqual(bands[(0.25, 0.4)]['reference'], 10)
+
+    def test_precision_is_reported_by_candidate_score_band(self):
+        ref = {i: [box(0, .9, 0)] for i in range(5)}
+        cand = {i: [box(0, .9, 0), box(500, .3, 2)] for i in range(5)}
+        _, r = self.gate_agree(self.run_dir('a', ref), self.run_dir('b', cand), '--min-precision', '0.1')
+        bands = {tuple(b['range']): b for b in r['precision_by_candidate_score']}
+        self.assertEqual(bands[(0.8, 1.01)]['precision'], 1.0)
+        self.assertEqual(bands[(0.25, 0.4)]['precision'], 0.0)
+
     def test_thresholds_are_configurable(self):
         fewer = {i: dets[:8] for i, dets in self.many().items()}
         code, _ = self.gate_agree(self.run_dir('a', self.many()), self.run_dir('b', fewer), '--min-recall', '0.7')
