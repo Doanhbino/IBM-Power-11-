@@ -1,6 +1,7 @@
 #include "rfdetr/bounded_queue.hpp"
 #include "rfdetr/decoder.hpp"
 #include "rfdetr/frame_shard.hpp"
+#include "rfdetr/layernorm.hpp"
 #include "rfdetr/gemm.hpp"
 #include "rfdetr/preprocess.hpp"
 #include "rfdetr/placement.hpp"
@@ -15,6 +16,7 @@
 #include <thread>
 #include <iostream>
 #include <limits>
+#include <random>
 
 namespace {
 void require(bool condition, const char* message) {
@@ -68,6 +70,54 @@ void memory_binding() {
         if (error.code().value() != EPERM && error.code().value() != ENOSYS) throw;  // sandbox forbids the syscall
     }
     throws([] { rfdetr::bind_memory(-1); });
+}
+// Double-precision reference: y = (x - mean) / sqrt(var + eps) * scale + bias, per row.
+void layer_norm_reference(const std::vector<float>& x, const std::vector<float>& scale, const std::vector<float>* bias,
+                          std::vector<double>& y, std::size_t rows, std::size_t n, double eps) {
+    y.assign(rows * n, 0.0);
+    for (std::size_t r = 0; r < rows; ++r) {
+        double mean = 0, var = 0;
+        for (std::size_t i = 0; i < n; ++i) mean += x[r * n + i];
+        mean /= n;
+        for (std::size_t i = 0; i < n; ++i) var += (x[r * n + i] - mean) * (x[r * n + i] - mean);
+        var /= n;
+        for (std::size_t i = 0; i < n; ++i)
+            y[r * n + i] = (x[r * n + i] - mean) / std::sqrt(var + eps) * scale[i] + (bias ? (*bias)[i] : 0.0);
+    }
+}
+void layer_norm() {
+    std::mt19937 gen(7);
+    std::normal_distribution<float> normal(0.f, 1.f);
+    auto check = [&](std::size_t rows, std::size_t n, float offset, bool with_bias, double tolerance, const char* what) {
+        std::vector<float> x(rows * n), scale(n), bias(n), y(rows * n, -1.f);
+        for (auto& v : x) v = offset + normal(gen);
+        for (auto& v : scale) v = 1.f + .3f * normal(gen);
+        for (auto& v : bias) v = .2f * normal(gen);
+        std::vector<double> expected;
+        layer_norm_reference(x, scale, with_bias ? &bias : nullptr, expected, rows, n, 1e-5);
+        rfdetr::layer_norm_rows(x.data(), scale.data(), with_bias ? bias.data() : nullptr, y.data(), rows, n, 1e-5f);
+        double worst = 0;
+        for (std::size_t i = 0; i < y.size(); ++i) worst = std::max(worst, std::abs(y[i] - expected[i]));
+        if (worst > tolerance) { std::cerr << what << " rows=" << rows << " n=" << n << " error=" << worst << '\n'; require(false, "LayerNorm numerical mismatch"); }
+    };
+    // Row lengths cover tails smaller than a vector (1, 3), exact vectors (4, 8) and the model's 256 and 384.
+    for (std::size_t n : {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 256, 384})
+        for (std::size_t rows : {1, 2, 7}) { check(rows, n, 0.f, true, 1e-5, "plain"); check(rows, n, 0.f, false, 1e-5, "no bias"); }
+    check(5, 384, 1000.f, true, 2e-4, "large mean offset");   // corrected two-pass keeps this accurate
+    check(3, 256, -50.f, true, 5e-5, "negative offset");
+    // A constant row has zero variance: output is bias (scale * 0 + bias), never NaN.
+    std::vector<float> x(8, 3.f), scale(8, 2.f), bias(8, .5f), y(8);
+    rfdetr::layer_norm_rows(x.data(), scale.data(), bias.data(), y.data(), 1, 8, 1e-5f);
+    for (float v : y) require(std::isfinite(v) && std::abs(v - .5f) < 1e-6f, "Constant row must give bias");
+    // In place is allowed (the row is fully read before it is written).
+    std::vector<float> a(16), b(16), s(16, 1.f);
+    for (auto& v : a) v = normal(gen);
+    b = a;
+    rfdetr::layer_norm_rows(a.data(), s.data(), nullptr, a.data(), 1, 16, 1e-5f);
+    std::vector<float> out(16);
+    rfdetr::layer_norm_rows(b.data(), s.data(), nullptr, out.data(), 1, 16, 1e-5f);
+    for (std::size_t i = 0; i < 16; ++i) require(a[i] == out[i], "In-place LayerNorm must match out-of-place");
+    throws([&] { rfdetr::layer_norm_rows(x.data(), scale.data(), nullptr, y.data(), 1, 0, 1e-5f); });
 }
 void frame_shards() {
     // Shards of one camera must partition the frame sequence: every index goes to exactly one shard.
@@ -195,7 +245,7 @@ void shared_rhs(rfdetr::GemmBackend backend) {
 
 int main() {
     try {
-        queues(); adapter(); yolo(); frame_shards(); packed_alignment(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
+        queues(); adapter(); yolo(); frame_shards(); layer_norm(); packed_alignment(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
         require(!rfdetr::allowed_cpus().empty(), "Empty effective cpuset");
         throws([] { rfdetr::bind_cpus({-1}); });
         memory_binding(); capture_binding();
