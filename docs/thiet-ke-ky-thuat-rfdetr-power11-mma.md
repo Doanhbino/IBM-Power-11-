@@ -448,6 +448,26 @@ Suy luận (giả định, chưa đo): nếu thread chính luôn bận (nó là 
 
 Giả thuyết giải thích (chưa kiểm chứng): với `allow_spinning=0`, các thread phụ ngủ giữa các vùng song song và đánh thức chậm, nên thread chính (đã chạy sẵn) nhận phần lớn khối việc trước khi thread phụ vào; `RunInParallel` 6,6% trên thread chính là chi phí điều phối. Phép thử trực tiếp: A/B `allow_spinning` 0 và 1 ở 4 thread, rồi đo lại phân bố chu kỳ theo thread. Nếu `allow_spinning=1` làm phân bố đều hơn và tăng FPS, giả thuyết được ủng hộ; cái giá là các thread phụ quay vòng chiếm CPU khi nhàn rỗi, đáng kể trên LPAR shared.
 
+### 6.2f A/B `allow_spinning` 0 và 1 ([ĐC], `runs/ab-spin1`)
+
+Replay clip 400 frame, binary `build-power-camera`, 1 worker, 4 thread, node 0, 6 lượt xen kẽ (S0,S1,S1,S0,S0,S1), mỗi lượt 400 mẫu, load average 7,3–8,6.
+
+| | FPS | Inference p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|
+| `allow_spinning=0` (S0) | 2,94 ± 0,00 | 320,9 ± 2,5 | 466,5 ± 9,6 | 522,5 ± 21,6 |
+| `allow_spinning=1` (S1) | **4,07 ± 0,32** | **241,9 ± 32,9** | **244,9 ± 32,6** | **259,5 ± 31,0** |
+| Thay đổi | **+38%** | −25% | **−48%** | −50% |
+
+FPS từng lượt S1: 4,25 / 3,62 / 4,34 (suy ra lượt 02 từ trung bình); S0: 2,94 ba lần. Chênh lệch vượt xa ngưỡng nhiễu đã đo (khoảng 3,5%) và vượt cả khoảng dao động giữa các lượt S1.
+
+**Hai đặc điểm đáng chú ý.**
+1. **Đuôi độ trễ biến mất.** Với S0, p95 cao hơn p50 khoảng 146 ms. Với S1, p95 chỉ cao hơn p50 khoảng 2,5–3,3 ms trong từng lượt (lượt 03: 288,4 và 290,9; lượt 06: 216,6 và 219,9). Độ trễ mỗi frame gần như hằng số trong một lượt.
+2. **Độ trễ khác nhau mạnh giữa các lượt S1** (p50 khoảng 217, 288 và giá trị thứ ba suy ra thấp hơn): chưa biết nguyên nhân, nhiều khả năng liên quan đến CPU vật lý mà hypervisor gán hoặc tải của các phân vùng khác. Chưa kiểm chứng.
+
+**Cái giá chưa đo:** spinning làm các thread quay vòng chiếm CPU khi rảnh. Chưa đo mức CPU tiêu thụ thêm. Trên LPAR shared uncapped (entitlement 14,5, pool 15 core) đó là CPU lấy khỏi các phân vùng khác. Chưa thấy ảnh hưởng này trong số đo, và phép đo chạy khi không có tải nào khác của ta.
+
+**Chưa kiểm:** (a) correctness (kết quả phải giống hệt vì phân chia phép tính không đổi, nhưng chưa chạy `compare_detections.py`); (b) cơ chế (phân bố chu kỳ theo thread với `allow_spinning=1`); (c) trên live RTSP với `capture_cpus`; (d) số thread tối ưu khi bật spinning (kết quả sweep 2/4/6/8 ở mục 6.2d là với spinning tắt).
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
