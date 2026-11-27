@@ -122,6 +122,48 @@ class CameraService(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_config(self.config(self.worker([0, 1], 0, 'a')), ROWS)
 
+    def test_workers_per_node_packs_disjoint_workers_on_each_node(self):
+        sources = [dict(id=f'cam-{i}', source=str(self.video)) for i in range(8)]
+        config = self.config(dict(cpus=[], threads=2, sources=sources))
+        workers = place(config, ROWS, threads=2, smt_limit=1, max_workers=8, workers_per_node=2)['workers']
+        self.assertEqual(len(workers), 4)                       # 2 nodes x 2 workers
+        self.assertEqual(sorted(w['numa_node'] for w in workers), [0, 0, 1, 1])
+        cpus = [c for w in workers for c in w['cpus']]
+        self.assertEqual(len(cpus), len(set(cpus)))              # disjoint
+        for w in workers:
+            self.assertEqual({ROWS[c]['node'] for c in w['cpus']}, {w['numa_node']})
+            self.assertEqual(len(w['cpus']), 2)
+        self.assertEqual(sorted(s['id'] for w in workers for s in w['sources']), sorted(s['id'] for s in sources))
+
+    def test_workers_per_node_default_is_one(self):
+        workers = place(self.config(self.worker([], 0, 'a')), ROWS, threads=2, smt_limit=1, max_workers=8)['workers']
+        self.assertEqual(len(workers), 1)
+        sources = [dict(id=f'cam-{i}', source=str(self.video)) for i in range(4)]
+        workers = place(self.config(dict(cpus=[], threads=2, sources=sources)), ROWS, threads=2, smt_limit=1,
+                        max_workers=8)['workers']
+        self.assertEqual(sorted(w['numa_node'] for w in workers), [0, 1])
+
+    def test_workers_per_node_respects_max_workers_and_spreads_nodes_first(self):
+        sources = [dict(id=f'cam-{i}', source=str(self.video)) for i in range(8)]
+        workers = place(self.config(dict(cpus=[], threads=2, sources=sources)), ROWS, threads=2, smt_limit=1,
+                        max_workers=3, workers_per_node=4)['workers']
+        self.assertEqual(len(workers), 3)
+        self.assertEqual(sorted(w['numa_node'] for w in workers), [0, 0, 1])   # alternate nodes before filling one
+
+    def test_workers_per_node_rejects_when_node_too_small(self):
+        sources = [dict(id=f'cam-{i}', source=str(self.video)) for i in range(8)]
+        with self.assertRaises(ValueError):
+            place(self.config(dict(cpus=[], threads=2, sources=sources)), ROWS, threads=2, smt_limit=1,
+                  max_workers=8, workers_per_node=5)   # 5 x 2 = 10 CPUs > 8 per node
+
+    def test_workers_per_node_includes_capture_cpus_per_worker(self):
+        sources = [dict(id=f'cam-{i}', source=str(self.video)) for i in range(4)]
+        workers = place(self.config(dict(cpus=[], threads=2, sources=sources)), ROWS, threads=2, smt_limit=1,
+                        max_workers=4, workers_per_node=2, capture_cpus=1)['workers']
+        used = [c for w in workers for c in w['cpus'] + w['capture_cpus']]
+        self.assertEqual(len(used), len(set(used)))
+        self.assertEqual(len(workers), 4)
+
     def test_worker_plan_preserves_model_keys(self):
         config = self.config(self.worker([], 0, 'a'), self.worker([], 0, 'b', **YOLO))
         planned = place(config, ROWS, threads=2, smt_limit=1, max_workers=4)['workers']

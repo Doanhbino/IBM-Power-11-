@@ -505,9 +505,23 @@ Tổng hợp theo số worker (tổng FPS, replay, FP32, 4 thread mỗi worker):
 - **Spinning mất lợi thế ở 4 worker.** Từ 2 lên 4 worker, tắt spinning tăng 1,87 lần (hiệu suất khoảng 93%), bật spinning chỉ tăng 1,16 lần. Với 16 thread quay vòng vượt số core vật lý của pool (khoảng 15), hai chế độ hội tụ về cùng khoảng 9,5 đến 9,8 FPS tổng. Load average vượt 15 (tới 21,4), phù hợp với việc pool bão hòa.
 - **Điểm hiệu quả nhất theo FPS trên mỗi thread bận:** 2 worker bật spinning (8,45 FPS với 8 thread, khoảng 1,06 FPS mỗi thread), cao hơn rõ so với 4 worker bật spinning (khoảng 0,61).
 - **Giới hạn tổng của cấu hình này khoảng 9,5 đến 9,8 FPS** (replay, FP32, 4 camera). Cấu hình tắt spinning đạt gần mức đó với ít CPU hơn, nên thân thiện hơn với các phân vùng khác. Độ lệch rất nhỏ giữa các lượt (0,01 ở Q0) gợi ý một trần cứng chứ không phải nhiễu ngẫu nhiên, nhưng chưa biết trần đó là CPU, băng thông bộ nhớ hay hypervisor.
-- **Chưa kiểm:** 3 worker; nhiều worker hơn với ít thread mỗi worker (ví dụ 4 worker × 2 thread, cùng 8 thread với cấu hình 2 × 4); chi phí giải mã H.264 live khi nhiều camera (replay MJPG gần như miễn phí, nên số liệu này **chưa gồm** chi phí đó).
+- **Chưa kiểm:** 3 worker; chi phí giải mã H.264 live khi nhiều camera (replay MJPG gần như miễn phí, nên số liệu này **chưa gồm** chi phí đó).
 
-### 6.3 Hạng mục phân tích ứng với từng hotspot
+### 6.2i Cùng 8 thread: 2 worker × 4 thread so với 4 worker × 2 thread ([ĐC], `runs/ab-multi8t`)
+
+`allow_spinning=1`, replay, 6 lượt xen kẽ. M1 = 2 worker × 4 thread (800 mẫu mỗi lượt), Z1 = 4 worker × 2 thread (1600 mẫu mỗi lượt). 0 frame bị bỏ, 0 lỗi.
+
+| | Tổng FPS | Inference p50 (ms) | p95 (ms) | FPS mỗi thread |
+|---|---|---|---|---|
+| M1 (2 × 4) | 8,25 ± 0,24 | 219,7 ± 0,9 | 266,5 ± 29,1 | 1,03 |
+| Z1 (4 × 2) | **9,46 ± 0,14** | 394,2 ± 3,0 | 434,8 ± 43,8 | **1,18** |
+| Z1 so với M1 | **+14,7%** | **+79%** | | |
+
+- **Nhiều worker ít thread cho throughput cao hơn** (+14,7%, vượt ngưỡng nhiễu) với cùng 8 thread, nhưng độ trễ mỗi frame gần gấp đôi. Với bài toán nhiều camera tần suất thấp, độ trễ vài trăm ms không đáng kể; với phản ứng nhanh cho một camera thì ngược lại.
+- **Mỗi worker trong mọi cấu hình 4 worker đạt khoảng 2,4 FPS:** Q0 (4×4, spin 0) 2,38, Q1 (4×4, spin 1) 2,46, Z1 (4×2, spin 1) 2,37; và T2 một worker (2 thread, spin 0) 2,39. Z1 scale gần tuyến tính từ 1 lên 4 worker (4 × 2,39 = 9,56 so với 9,46 đo được). **Con số 9,5 đến 9,8 FPS ở mục 6.2h có thể không phải trần phần cứng**, mà là giới hạn của "4 worker" do `worker_plan` chỉ đặt một worker mỗi node.
+- Z1 chỉ dùng 8 thread trong khi pool có khoảng 15 core. Trần thật chưa đo; cần hơn 4 worker. Tùy chọn `--workers-per-node` (mục 6.2j, đã cài) phục vụ việc này.
+
+
 
 | Chủ đề | Cách đo | Khi nào hành động |
 |---|---|---|

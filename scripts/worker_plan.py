@@ -14,10 +14,10 @@ from sweep import selected_cpus
 PLACEMENT_KEYS = {'cpus', 'numa_node', 'threads', 'sources', 'capture_cpus'}
 
 
-def place(config, rows, threads=4, smt_limit=1, max_workers=4, capture_cpus=0):
-    """One worker per NUMA node. Input workers that set different model keys form separate groups;
+def place(config, rows, threads=4, smt_limit=1, max_workers=4, capture_cpus=0, workers_per_node=1):
+    """By default one worker per NUMA node; workers_per_node packs several disjoint workers on each node. Input workers that set different model keys form separate groups;
     nodes are dealt to the groups round-robin so each model keeps its own nodes (one group = old behavior)."""
-    if min(threads, smt_limit, max_workers) < 1 or capture_cpus < 0:
+    if min(threads, smt_limit, max_workers, workers_per_node) < 1 or capture_cpus < 0:
         raise ValueError('threads, smt_limit and max_workers must be positive; capture_cpus cannot be negative')
     sources = [source for worker in config['workers'] for source in worker['sources']]
     if not sources or len({source['id'] for source in sources}) != len(sources):
@@ -31,23 +31,27 @@ def place(config, rows, threads=4, smt_limit=1, max_workers=4, capture_cpus=0):
     for row in selected_cpus(rows, smt_limit):
         if row['node'] is not None:
             pools.setdefault(row['node'], []).append(row['cpu'])
-    nodes = [(node, cpus) for node, cpus in sorted(pools.items()) if len(cpus) >= threads + capture_cpus]
+    per_worker = threads + capture_cpus
+    nodes = [(node, cpus) for node, cpus in sorted(pools.items()) if len(cpus) >= per_worker * workers_per_node]
     if not nodes:
         raise ValueError('No observed NUMA node has enough allowed CPUs; reduce threads or inspect topology')
     if len(groups) > len(nodes):
         raise ValueError('More model groups than usable NUMA nodes; reduce groups or threads')
     workers = []
     for index, group in enumerate(groups.values()):
-        mine = [{**group['keys'], 'cpus': sorted(cpus)[:threads], 'numa_node': node, 'threads': threads,
-                 'sources': [], **({'capture_cpus': sorted(cpus)[threads:threads + capture_cpus]} if capture_cpus else {})}
-                for node, cpus in nodes[index::len(groups)]]
+        # Slot k of every node before slot k+1, so a small max_workers still spreads across nodes first.
+        slots = [(node, sorted(cpus)[slot * per_worker:(slot + 1) * per_worker])
+                 for slot in range(workers_per_node) for node, cpus in nodes[index::len(groups)]]
+        mine = [{**group['keys'], 'cpus': block[:threads], 'numa_node': node, 'threads': threads,
+                 'sources': [], **({'capture_cpus': block[threads:]} if capture_cpus else {})}
+                for node, block in slots]
         mine = mine[:min(max_workers, len(group['sources']))]
         for position, source in enumerate(sorted(group['sources'], key=lambda source: source['id'])):
             mine[position % len(mine)]['sources'].append(source)
         workers += mine
     return dict(config, workers=workers,
-                placement={'smt_limit': smt_limit, 'threads_per_worker': threads, 'capture_cpus_per_worker': capture_cpus,
-                           'topology': rows, 'policy': 'one worker per observed NUMA node; disjoint masks; '
+                placement={'smt_limit': smt_limit, 'threads_per_worker': threads, 'capture_cpus_per_worker': capture_cpus, 'workers_per_node': workers_per_node,
+                           'topology': rows, 'policy': 'workers_per_node workers per observed NUMA node; disjoint masks; '
                                                        'model groups get separate nodes'})
 
 
@@ -58,6 +62,8 @@ def main():
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--smt-limit', type=int, default=1)
     parser.add_argument('--max-workers', type=int, default=4)
+    parser.add_argument('--workers-per-node', type=int, default=1,
+                        help='pack this many disjoint workers on each NUMA node (each needs threads + capture CPUs)')
     parser.add_argument('--capture-cpus', type=int, default=0,
                         help='reserve N extra CPUs per worker (same NUMA node) for video decode; 0 keeps decode on the inference CPUs')
     args = parser.parse_args()
@@ -65,7 +71,7 @@ def main():
     if path.exists():
         raise FileExistsError('Use a new config file to preserve the previous placement')
     result = place(json.loads(Path(args.config).read_text()), topology(),
-                   args.threads, args.smt_limit, args.max_workers, args.capture_cpus)
+                   args.threads, args.smt_limit, args.max_workers, args.capture_cpus, args.workers_per_node)
     # A generated config may contain live camera credentials; retain owner-only access.
     descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(descriptor)

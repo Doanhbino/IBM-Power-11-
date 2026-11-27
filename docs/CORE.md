@@ -72,6 +72,7 @@ python scripts/camera_service.py --config configs/camera-local.json \
 
 Hai tùy chọn mặc định tắt, để các lượt cũ vẫn so sánh được:
 
+- `--workers-per-node N` của `worker_plan.py`: đặt N worker có mask CPU rời nhau trên mỗi NUMA node (mặc định 1, như trước). Mỗi worker cần `threads` cộng `capture_cpus` CPU, nên node phải có ít nhất N lần con số đó. Số worker thực là nhỏ hơn giữa `max_workers`, số camera và số slot; các slot được xếp xen kẽ giữa các node trước khi dồn vào một node.
 - `--capture-cpus N` của `worker_plan.py` (khóa `capture_cpus` trong worker): dành thêm N CPU cùng NUMA node, không chồng với CPU inference, cho thread capture/decode (và các thread FFmpeg do nó sinh ra). Thiếu khóa này thì decode dùng chung CPU với ORT như trước. Nhờ vậy decode không tranh core với các thread tính toán; chưa đo lợi ích, cần thử trên RTSP H.264 thật.
 - `session.allow_spinning` (0 hoặc 1, mặc định 0): bật hoặc tắt `session.intra_op.allow_spinning` của ORT. Mặc định ORT là 1, core này mặc định 0.
 
