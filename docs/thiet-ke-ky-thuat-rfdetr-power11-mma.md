@@ -562,7 +562,7 @@ Một worker, camera RTSP thật (kênh 101 của camera; codec và độ phân 
 | Thread tính toán ORT | 4 | 236,2% (87,6 / 54,3 / 47,8 / 46,4) |
 
 - **Giải mã một camera tốn khoảng 0,185 core, tức khoảng 7,4 ms CPU mỗi frame nhận** (0,185 core ÷ 24,9 FPS). Gồm đọc mạng RTSP, giải mã bằng phần mềm của OpenCV/FFmpeg và các thread phụ của nó. Đo một camera, một cửa sổ 30 giây; độ phân giải và codec không rõ nên không suy rộng sang camera khác.
-- **Chi phí suy luận trong lượt này khoảng 0,81 core-giây mỗi frame được xử lý** (2,36 core ÷ 2,9 FPS), khớp với ước lượng 0,78 suy từ `perf` ở mục 6.2k trước đó. Mô hình tắt spinning vẫn có thread chính bận hơn các thread phụ (87,6% so với khoảng 46 đến 54%), giống mục 6.2e.
+- **Chi phí suy luận trong lượt này khoảng 0,81 core-giây mỗi frame được xử lý** (2,36 core ÷ 2,9 FPS), khớp với ước lượng 0,78 suy từ `perf` ở mục 6.2f. Mô hình tắt spinning vẫn có thread chính bận hơn các thread phụ (87,6% so với khoảng 46 đến 54%), giống mục 6.2e.
 - **Nhân với số camera:** giải mã tốn khoảng 0,185 × N core. Với N = 50 camera là khoảng 9,3 core, bằng khoảng 62% pool 15 core, **trước khi chạy một frame suy luận nào**. Camera phát khoảng 25 FPS, và phải giải mã mọi frame dù chỉ phân tích vài frame.
 
 Mô hình tỉ lệ thô (giả định throughput tỉ lệ thuận với số core còn lại sau giải mã; mốc 13,55 FPS đạt khi dùng gần hết pool, mục 6.2j; chưa kiểm chứng bằng đo trực tiếp):
