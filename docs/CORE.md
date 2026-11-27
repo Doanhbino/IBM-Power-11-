@@ -70,6 +70,11 @@ python scripts/camera_service.py --config configs/camera-local.json \
   --output runs/camera-replay-r1
 ```
 
+Hai tùy chọn mặc định tắt, để các lượt cũ vẫn so sánh được:
+
+- `--capture-cpus N` của `worker_plan.py` (khóa `capture_cpus` trong worker): dành thêm N CPU cùng NUMA node, không chồng với CPU inference, cho thread capture/decode (và các thread FFmpeg do nó sinh ra). Thiếu khóa này thì decode dùng chung CPU với ORT như trước. Nhờ vậy decode không tranh core với các thread tính toán; chưa đo lợi ích, cần thử trên RTSP H.264 thật.
+- `session.allow_spinning` (0 hoặc 1, mặc định 0): bật hoặc tắt `session.intra_op.allow_spinning` của ORT. Mặc định ORT là 1, core này mặc định 0.
+
 Một process cho mỗi worker, tối đa một worker trên mỗi node trong generator. CPU mask được kiểm lại khi chạy; memory bind không thực hiện được sẽ làm worker thất bại. Model và tensor được khởi tạo sau placement. Số ORT thread không vượt mask. Capture/decode cũng tiêu thụ CPU trên mask này; cần profile số thread của codec/FFmpeg và dự trù ngân sách capture khi sweep. `cv::setNumThreads(1)` không tự khống chế mọi thread của codec.
 
 Live: đặt `session.mode="live"`, `duration_s=3600` cho soak, `max_frame_age_ms` theo SLA, source RTSP thật, điều chỉnh `timeout_s` lớn hơn tổng session-init/warmup/soak/shutdown. Retry hữu hạn bằng `reconnect_attempts`, mỗi lần chờ `reconnect_delay_ms`; remote FFmpeg open/read có timeout. Thiết lập nguồn local/device có thể không hỗ trợ timeout giống RTSP. Replay không bỏ frame theo age; không đặt giới hạn duration/max_frames nếu muốn xử lý toàn video.

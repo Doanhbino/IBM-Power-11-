@@ -43,6 +43,8 @@ def validate_model_session(session):
                 'top_k' if kind == 'rfdetr' else 'max_det'):
         positive_integer(session.get(key), key)
     positive_integer(session.get('warmup', 10), 'warmup', 0)
+    if 'allow_spinning' in session and session['allow_spinning'] not in (0, 1):
+        raise ValueError('allow_spinning must be 0 or 1')
     required = ('model', 'input_name') + (('boxes_output', 'logits_output') if kind == 'rfdetr' else ('output_name',))
     for key in required:
         if not isinstance(session.get(key), str) or not session[key]:
@@ -85,13 +87,21 @@ def validate_config(config, rows):
         if len(set(cpus)) != len(cpus) or used.intersection(cpus):
             raise ValueError('Worker CPU masks must be unique and disjoint')
         used.update(cpus)
+        capture = worker.get('capture_cpus')
+        if capture is not None:
+            if (not isinstance(capture, list) or not capture or len(set(capture)) != len(capture)
+                    or any(type(cpu) is not int or cpu not in by_cpu for cpu in capture)):
+                raise ValueError('capture_cpus must be a nonempty list of unique CPUs in the effective topology')
+            if used.intersection(capture):
+                raise ValueError('capture_cpus must be disjoint from every worker and capture CPU mask')
+            used.update(capture)
         threads = positive_integer(worker['threads'], 'threads')
         if threads > len(cpus):
             raise ValueError('ORT threads exceed worker CPU mask')
         node = worker.get('numa_node')
         if node is not None:
             positive_integer(node, 'numa_node', 0)
-            if {by_cpu[cpu]['node'] for cpu in cpus} != {node}:
+            if {by_cpu[cpu]['node'] for cpu in cpus + (capture or [])} != {node}:
                 raise ValueError('NUMA-local worker CPU mask spans other/unknown nodes')
         sources = worker['sources']
         if not sources:
@@ -111,6 +121,8 @@ def validate_config(config, rows):
         cfg = dict(session, cpus=sorted(cpus), threads=threads, sources=sources)
         if node is not None:
             cfg['numa_node'] = node
+        if capture is not None:
+            cfg['capture_cpus'] = sorted(capture)
         workers.append(cfg)
     if not workers:
         raise ValueError('No workers configured')

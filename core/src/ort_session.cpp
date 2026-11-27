@@ -39,7 +39,7 @@ struct OrtSession::Impl {
         options.SetInterOpNumThreads(1);
         options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        options.AddConfigEntry("session.intra_op.allow_spinning", "0");
+        options.AddConfigEntry("session.intra_op.allow_spinning", cfg.allow_spinning ? "1" : "0");
         if (profiling) options.EnableProfiling(cfg.profile_prefix.c_str());
         session = Ort::Session(env, cfg.model.c_str(), options);
         if (session.GetInputCount() != 1) throw std::invalid_argument("Expected one image input");

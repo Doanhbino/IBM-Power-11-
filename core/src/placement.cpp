@@ -39,9 +39,12 @@ std::vector<int> allowed_cpus() {
 #endif
 }
 
-void bind_cpus(const std::vector<int>& cpus) {
+void bind_cpus(const std::vector<int>& cpus) { bind_cpus(cpus, allowed_cpus()); }
+
+void bind_cpus(const std::vector<int>& cpus, const std::vector<int>& permitted) {
     if (cpus.empty()) throw std::invalid_argument("CPU mask must not be empty");
-    const auto allowed = allowed_cpus();
+    auto allowed = permitted;
+    std::sort(allowed.begin(), allowed.end());
     for (int cpu : cpus)
         if (!std::binary_search(allowed.begin(), allowed.end(), cpu))
             throw std::invalid_argument("Requested CPU outside effective affinity");

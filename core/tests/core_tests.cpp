@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <system_error>
 #include <future>
+#include <thread>
 #include <iostream>
 #include <limits>
 
@@ -66,6 +67,31 @@ void memory_binding() {
         if (error.code().value() != EPERM && error.code().value() != ENOSYS) throw;  // sandbox forbids the syscall
     }
     throws([] { rfdetr::bind_memory(-1); });
+}
+void capture_binding() {
+    // A capture thread must be able to move to CPUs the (narrowed) worker thread no longer sees,
+    // as long as they were permitted before the worker narrowed its own mask.
+    const auto permitted = rfdetr::allowed_cpus();
+    if (permitted.size() < 2) return;
+    std::exception_ptr failure;
+    std::thread worker([&] {
+        try {
+            rfdetr::bind_cpus({permitted[0]});
+            require(rfdetr::allowed_cpus() == std::vector<int>{permitted[0]}, "Worker mask narrowed");
+            throws([&] { rfdetr::bind_cpus({permitted[1]}); });                 // legacy check sees only the narrowed mask
+            std::thread capture([&] {
+                try {
+                    rfdetr::bind_cpus({permitted[1]}, permitted);
+                    require(rfdetr::allowed_cpus() == std::vector<int>{permitted[1]}, "Capture mask applied");
+                    throws([&] { rfdetr::bind_cpus({permitted.back() + 1}, permitted); });  // outside permitted set
+                } catch (...) { failure = std::current_exception(); }
+            });
+            capture.join();
+            require(rfdetr::allowed_cpus() == std::vector<int>{permitted[0]}, "Worker mask unchanged by capture thread");
+        } catch (...) { if (!failure) failure = std::current_exception(); }
+    });
+    worker.join();
+    if (failure) std::rethrow_exception(failure);
 }
 void yolo() {
     // 1x1 blue pixel (BGR) into 4x4: scale 4, no padding, RGB planes 0,0,1.
@@ -156,7 +182,7 @@ int main() {
         queues(); adapter(); yolo(); packed_alignment(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
         require(!rfdetr::allowed_cpus().empty(), "Empty effective cpuset");
         throws([] { rfdetr::bind_cpus({-1}); });
-        memory_binding();
+        memory_binding(); capture_binding();
         const auto capability = rfdetr::mma_capability();
         if (capability.compiled && capability.exposed) {
             gemm(rfdetr::GemmBackend::mma); shared_rhs(rfdetr::GemmBackend::mma);

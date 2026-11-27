@@ -9,6 +9,8 @@ namespace rfdetr {
 struct OrtConfig {
     std::string model, input_name, boxes_name, logits_name, profile_prefix;
     int height{}, width{}, threads{1};
+    // ORT default is spinning on; this core defaults it off to avoid burning shared-LPAR CPU. Sweepable per run.
+    bool allow_spinning{false};
     // model_type "yolo11": one output [1, 4 + classes, anchors] named output_name; boxes/logits names stay empty.
     std::string model_type{"rfdetr"}, output_name;
     std::size_t classes{};

@@ -101,6 +101,13 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
     cv::FileStorage file(config_path.string(), cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
     if (!file.isOpened()) throw std::runtime_error("Cannot read worker configuration");
     const auto cfg = file.root();
+    // Captured before the worker narrows its own mask; capture threads may use any of these CPUs.
+    const auto permitted_cpus = rfdetr::allowed_cpus();
+    std::vector<int> capture_cpus;
+    if (!cfg["capture_cpus"].empty()) {
+        for (const auto& cpu : cfg["capture_cpus"]) capture_cpus.push_back(static_cast<int>(cpu));
+        if (capture_cpus.empty()) throw std::invalid_argument("capture_cpus must not be empty when present");
+    }
     if (!cfg["cpus"].empty()) {
         std::vector<int> cpus;
         for (const auto& cpu : cfg["cpus"]) cpus.push_back(static_cast<int>(cpu));
@@ -127,6 +134,7 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
     ort_config.height = height;
     ort_config.width = width;
     ort_config.threads = threads;
+    ort_config.allow_spinning = integer(cfg, "allow_spinning", 0) == 1;
     ort_config.model_type = model_type;
     rfdetr::Normalization normalization;
     rfdetr::DecodeConfig decode;
@@ -206,6 +214,8 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
     try {
         for (auto& camera : cameras) camera->capture = std::thread([&, camera = camera.get()] {
             try {
+                // Decode (and any FFmpeg threads spawned from here) stays off the inference CPUs when requested.
+                if (!capture_cpus.empty()) rfdetr::bind_cpus(capture_cpus, permitted_cpus);
                 cv::VideoCapture capture;
                 int retries = 0;
                 while (!cancelled()) {

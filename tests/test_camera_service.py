@@ -74,6 +74,54 @@ class CameraService(unittest.TestCase):
         out = validate_config(self.config(self.worker([0, 1], 0, 'a'), self.worker([8, 9], 1, 'b'), require_mma=True), ROWS)
         self.assertEqual(len(out), 2)
 
+    def test_capture_cpus_are_passed_through(self):
+        out = validate_config(self.config(self.worker([0, 1], 0, 'a', capture_cpus=[2, 3])), ROWS)
+        self.assertEqual(out[0]['capture_cpus'], [2, 3])
+
+    def test_capture_cpus_default_absent(self):
+        self.assertNotIn('capture_cpus', validate_config(self.config(self.worker([0, 1], 0, 'a')), ROWS)[0])
+
+    def test_capture_cpus_must_not_overlap_any_worker(self):
+        for bad in ([1, 2], [8, 9]):  # own inference CPUs; another worker's CPUs
+            with self.assertRaises(ValueError):
+                validate_config(self.config(self.worker([0, 1], 0, 'a', capture_cpus=bad),
+                                            self.worker([8, 9], 1, 'b')), ROWS)
+        with self.assertRaises(ValueError):  # two workers sharing a capture CPU
+            validate_config(self.config(self.worker([0, 1], 0, 'a', capture_cpus=[2]),
+                                        self.worker([8, 9], 1, 'b', capture_cpus=[2])), ROWS)
+
+    def test_capture_cpus_must_stay_on_worker_numa_node(self):
+        with self.assertRaises(ValueError):
+            validate_config(self.config(self.worker([0, 1], 0, 'a', capture_cpus=[10])), ROWS)
+
+    def test_capture_cpus_must_exist_and_be_unique_integers(self):
+        for bad in ([99], [2, 2], [], ['2']):
+            with self.assertRaises(ValueError):
+                validate_config(self.config(self.worker([0, 1], 0, 'a', capture_cpus=bad)), ROWS)
+
+    def test_worker_plan_reserves_capture_cpus(self):
+        config = self.config(self.worker([], 0, 'a'))
+        worker = place(config, ROWS, threads=2, smt_limit=1, max_workers=1, capture_cpus=2)['workers'][0]
+        self.assertEqual(len(worker['cpus']), 2)
+        self.assertEqual(len(worker['capture_cpus']), 2)
+        self.assertFalse(set(worker['cpus']) & set(worker['capture_cpus']))
+        self.assertEqual({ROWS[c]['node'] for c in worker['cpus'] + worker['capture_cpus']}, {worker['numa_node']})
+
+    def test_worker_plan_default_has_no_capture_cpus(self):
+        worker = place(self.config(self.worker([], 0, 'a')), ROWS, threads=2, smt_limit=1, max_workers=1)['workers'][0]
+        self.assertNotIn('capture_cpus', worker)
+
+    def test_worker_plan_rejects_node_too_small_for_capture(self):
+        with self.assertRaises(ValueError):
+            place(self.config(self.worker([], 0, 'a')), ROWS, threads=2, smt_limit=1, max_workers=1, capture_cpus=7)
+
+    def test_allow_spinning_is_validated_and_passed(self):
+        self.session['allow_spinning'] = 1
+        self.assertEqual(validate_config(self.config(self.worker([0, 1], 0, 'a')), ROWS)[0]['allow_spinning'], 1)
+        self.session['allow_spinning'] = 2
+        with self.assertRaises(ValueError):
+            validate_config(self.config(self.worker([0, 1], 0, 'a')), ROWS)
+
     def test_worker_plan_preserves_model_keys(self):
         config = self.config(self.worker([], 0, 'a'), self.worker([], 0, 'b', **YOLO))
         planned = place(config, ROWS, threads=2, smt_limit=1, max_workers=4)['workers']
