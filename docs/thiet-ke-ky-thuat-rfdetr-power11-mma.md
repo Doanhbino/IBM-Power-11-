@@ -602,7 +602,25 @@ A/B: replay clip 400 frame, binary `build-power-camera`, 1 worker × 4 thread, `
 
 502 trên 521 lần bỏ sót (96%) và 254 trên 267 detection thừa (95%) nằm ở dải 0,25–0,40, sát ngưỡng 0,25. Từ 0,6 trở lên INT8 chỉ bỏ sót 3 trong 3688 detection của FP32 và không thừa detection nào. Gộp lại, recall ở mức score FP32 từ 0,4 trở lên là 4340/4359 = 0,9956. **Chênh lệch chủ yếu là các detection sát ngưỡng lật qua lại, không phải mất vật thể chắc chắn**; recall tổng 0,91 vì thế đã khuếch đại vấn đề. Giới hạn: đây vẫn là đồng thuận với FP32, không phải độ chính xác thật; detection score thấp thường là vật nhỏ hoặc bị che và có thể là vật thể thật, nên mất 36% trong dải 0,25–0,40 chưa chắc vô hại.
 
-**Hiệu quả thấp hơn kỳ vọng lý thuyết:** lệnh `xvi8ger4` làm gấp 4 lần phép nhân-cộng so với `xvf32ger`, và GEMM chiếm khoảng 45–53% thời gian, nhưng thời gian mỗi frame chỉ giảm 15%. Chưa biết kernel nào chạy (QGEMM POWER10 hay đường khác) và chi phí của các nút Quantize/Dequantize thêm vào (210 và 337 nút); cần `perf` trên cấu hình Q.
+**Kernel INT8 chạy thật [ĐC]** (`perf record -F 999 -p <PID>` trên `rfdetr_camera` chạy cấu hình INT8, replay, 67 173 mẫu, `allow_spinning=1`, không có call graph):
+
+| Symbol | % chu kỳ |
+|---|---|
+| `MlasGemmQuantKernel<MLAS_GEMM_QUANT_KERNEL_POWER10>` | **18,19** (INT8 MMA) |
+| `ThreadPool::RunInParallel` | 17,03 (chờ việc giữa các thread; có spinning nên tính là chu kỳ) |
+| LayerNorm `ComputeJob<float,float,void>` | 14,28 |
+| `MlasSgemmKernelPOWER10` (FP32, 32 MatMul attention) | 11,93 |
+| `MlasComputeSumExpF32Kernel` + `MlasReduceMaximumF32Kernel` + `MlasComputeSoftmaxOutputF32Kernel` | 5,68 + 1,41 + 0,45 |
+| `MlasErfKernel` | 5,50 |
+| `MlasQuantizeLinearVSX<uint8>` | 3,66 |
+| `MlasRequantizeOutput<uint8>` | 2,24 |
+| `MlasGemmQuantCopyPackA8x8` | 1,24 |
+| `DequantizeLinear<uint8>` | 1,11 |
+| `MlasGemmQuantPackedOperation<...POWER10>` | 0,92 |
+| `L_Rows8` | 1,84 |
+| `rfdetr::Preprocessor::run` | 1,41 |
+
+Phần GEMM giảm từ khoảng 53% (FP32) xuống khoảng 32% (INT8 18,2 + FP32 11,9 + `L_Rows8` 1,8); nhưng các nút Quantize/Requantize/pack/Dequantize chiếm thêm khoảng 9% chu kỳ, và các phép không phải GEMM trở thành nút thắt chính: LayerNorm 14,3%, Softmax khoảng 7,5%, GELU 5,5%. Thời gian chờ giữa các thread (`RunInParallel`) chiếm 17%, thước đo trực tiếp của mất cân bằng. Con số này **không so trực tiếp** với 3,5% ở mục 6.2c vì lượt đó tắt spinning (thread ngủ, không tính chu kỳ).
 
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
