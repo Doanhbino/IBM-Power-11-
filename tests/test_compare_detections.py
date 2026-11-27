@@ -89,5 +89,56 @@ class CompareDetections(unittest.TestCase):
         self.assertEqual(result['frames_compared'], 0)
 
 
+class Agreement(unittest.TestCase):
+    setUp = CompareDetections.setUp
+    tearDown = CompareDetections.tearDown
+    run_dir = CompareDetections.run_dir
+    gate = CompareDetections.gate
+
+    """Looser mode for lower precision: how much of the FP32 output does the candidate reproduce?"""
+    def gate_agree(self, reference, candidate, *extra):
+        out = self.root / 'agree.json'
+        done = subprocess.run([sys.executable, str(SCRIPT), '--agreement', '--reference', reference, '--candidate',
+                               candidate, '--output', str(out), '--min-frames', '3', *extra], capture_output=True, text=True)
+        return done.returncode, json.loads(out.read_text())
+
+    def many(self, change=None, count=10):
+        base = {i: [box(20 * k, 0.9 - k / 100, k % 3) for k in range(count)] for i in range(5)}
+        base.update(change or {})
+        return base
+
+    def test_identical_is_full_agreement(self):
+        code, r = self.gate_agree(self.run_dir('a', self.many()), self.run_dir('b', self.many()))
+        self.assertEqual(code, 0)
+        self.assertEqual((r['recall'], r['precision']), (1.0, 1.0))
+
+    def test_small_jitter_counts_as_agreement_at_half_iou(self):
+        jitter = {i: [dict(d, xyxy=[d['xyxy'][0] + 3, d['xyxy'][1], d['xyxy'][2] + 3, d['xyxy'][3]], score=d['score'] - .02)
+                      for d in dets] for i, dets in self.many().items()}
+        code, r = self.gate_agree(self.run_dir('a', self.many()), self.run_dir('b', jitter))
+        self.assertEqual(code, 0, r)
+        self.assertEqual(r['recall'], 1.0)
+        strict, _ = self.gate(self.run_dir('c', self.many()), self.run_dir('d', jitter))
+        self.assertEqual(strict, 2)                                # strict mode still rejects the same output
+
+    def test_missing_detections_lower_recall_and_fail_threshold(self):
+        fewer = {i: dets[:8] for i, dets in self.many().items()}   # 2 of 10 missing in every frame
+        code, r = self.gate_agree(self.run_dir('a', self.many()), self.run_dir('b', fewer))
+        self.assertAlmostEqual(r['recall'], .8)
+        self.assertEqual(r['precision'], 1.0)
+        self.assertEqual(code, 2)                                  # default min_recall 0.95
+
+    def test_extra_detections_lower_precision(self):
+        extra = {i: dets + [box(900, .5, 0)] for i, dets in self.many().items()}
+        _, r = self.gate_agree(self.run_dir('a', self.many()), self.run_dir('b', extra), '--min-precision', '0.5')
+        self.assertEqual(r['recall'], 1.0)
+        self.assertAlmostEqual(r['precision'], 10 / 11, places=4)
+
+    def test_thresholds_are_configurable(self):
+        fewer = {i: dets[:8] for i, dets in self.many().items()}
+        code, _ = self.gate_agree(self.run_dir('a', self.many()), self.run_dir('b', fewer), '--min-recall', '0.7')
+        self.assertEqual(code, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

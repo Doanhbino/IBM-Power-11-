@@ -74,6 +74,32 @@ def compare(reference, candidate, iou_min, score_tol, min_frames):
             'passed': passed}
 
 
+def agreement(reference, candidate, iou_min, min_frames, min_recall, min_precision):
+    """Lower-precision check: what fraction of the reference detections does the candidate reproduce (recall), and
+    what fraction of the candidate's detections exist in the reference (precision). Same class slot, IoU >= iou_min.
+    This is agreement with the reference model, NOT accuracy against ground truth."""
+    common = sorted(set(reference) & set(candidate))
+    matched = ref_total = cand_total = 0
+    iou_sum, score_delta_sum = 0.0, 0.0
+    for key in common:
+        pairs, only_r, only_c = match(reference[key], candidate[key], iou_min)
+        matched += len(pairs)
+        ref_total += len(reference[key])
+        cand_total += len(candidate[key])
+        for value, delta in pairs:
+            iou_sum += value
+            score_delta_sum += delta
+    recall = matched / ref_total if ref_total else 1.0
+    precision = matched / cand_total if cand_total else 1.0
+    return {'mode': 'agreement', 'frames_compared': len(common), 'reference_detections': ref_total,
+            'candidate_detections': cand_total, 'matched': matched, 'recall': recall, 'precision': precision,
+            'mean_matched_iou': iou_sum / matched if matched else None,
+            'mean_score_delta': score_delta_sum / matched if matched else None,
+            'thresholds': {'iou_min': iou_min, 'min_recall': min_recall, 'min_precision': min_precision,
+                           'min_frames': min_frames},
+            'passed': len(common) >= min_frames and recall >= min_recall and precision >= min_precision}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--reference', required=True)
@@ -82,12 +108,24 @@ def main():
     parser.add_argument('--iou-min', type=float, default=0.99)
     parser.add_argument('--score-tol', type=float, default=1e-3)
     parser.add_argument('--min-frames', type=int, default=100)
+    parser.add_argument('--agreement', action='store_true',
+                        help='tolerant mode for lower precision: recall/precision against the reference, IoU >= 0.5')
+    parser.add_argument('--min-recall', type=float, default=0.95)
+    parser.add_argument('--min-precision', type=float, default=0.95)
     args = parser.parse_args()
-    result = compare(load(args.reference), load(args.candidate), args.iou_min, args.score_tol, args.min_frames)
+    if args.agreement:
+        iou_min = args.iou_min if args.iou_min != 0.99 else 0.5     # strict default is not meant for this mode
+        result = agreement(load(args.reference), load(args.candidate), iou_min, args.min_frames,
+                           args.min_recall, args.min_precision)
+        keys = ('frames_compared', 'reference_detections', 'candidate_detections', 'matched', 'recall', 'precision',
+                'mean_matched_iou', 'mean_score_delta', 'passed')
+    else:
+        result = compare(load(args.reference), load(args.candidate), args.iou_min, args.score_tol, args.min_frames)
+        keys = ('frames_compared', 'frames_exact', 'matched', 'only_reference', 'only_candidate', 'min_matched_iou',
+                'max_score_delta', 'passed')
     result.update(reference=args.reference, candidate=args.candidate)
     atomic_json(args.output, result)
-    print(json.dumps({key: result[key] for key in ('frames_compared', 'frames_exact', 'matched', 'only_reference',
-                                                  'only_candidate', 'min_matched_iou', 'max_score_delta', 'passed')}))
+    print(json.dumps({key: result[key] for key in keys}))
     sys.exit(0 if result['passed'] else 2)
 
 
