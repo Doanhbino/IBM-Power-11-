@@ -57,6 +57,18 @@ Số đo trên camera RTSP thật (24,9 FPS), một lượt mỗi cấu hình, c
 - `scripts/live_summary.py runs/<chiến-dịch>` in FPS, độ mượt và độ trễ theo từng camera, gộp các mảnh.
 - INT8 (`scripts/quantize_int8.py`) nhanh hơn khoảng 15% ở phần inference nhưng chưa đạt ngưỡng đồng thuận với FP32 và chưa có dữ liệu nhãn; chưa dùng làm cấu hình chuẩn.
 
+## LayerNorm vector hóa (custom op `com.rfdetr::VsxLayerNorm`)
+
+Trong profile RF-DETR trên Power11, `LayerNormalization` của ORT chiếm khoảng 14 đến 16% chu kỳ và không phải phép MMA. Custom op này thay 51 nút `LayerNormalization` bằng kernel `rfdetr::layer_norm_rows` (GCC vector extension, sinh lệnh VSX trên Power; thuật toán hai lượt có hiệu chỉnh trung bình nên đúng cả khi trung bình lệch lớn), chia hàng cho thread pool của ORT.
+
+```bash
+# build_core.sh camera/power-camera tạo thêm <thư-mục-build>/librfdetr_ops.so
+python scripts/replace_layernorm.py --model <model.onnx> --output <model>_vsxln.onnx
+# trong session của worker: "model": ".../<model>_vsxln.onnx", "custom_ops_library": ".../librfdetr_ops.so"
+```
+
+`replace_layernorm.py` chỉ thay các nút thay được chính xác (axis -1, float32, đầu ra Mean/InvStdDev không dùng) và ghi manifest có hash. Model đã viết lại **chỉ chạy được khi thư viện custom op được nạp**; `camera_service.py` kiểm thư viện tồn tại và ghi hash vào `run.json`. Chưa đo lợi ích trên Power11 (xem tài liệu thiết kế mục 6.2p).
+
 ## Hai loại model (RF-DETR / YOLO11)
 
 Mỗi worker chọn model bằng `session.model_type` (`rfdetr` mặc định, hoặc `yolo11`). Config mẫu giao thông 4 lớp (Car, Motorcycle, Primitive_Vehicle, person):

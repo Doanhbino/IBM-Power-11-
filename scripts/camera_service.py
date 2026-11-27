@@ -45,6 +45,10 @@ def validate_model_session(session):
     positive_integer(session.get('warmup', 10), 'warmup', 0)
     if 'allow_spinning' in session and session['allow_spinning'] not in (0, 1):
         raise ValueError('allow_spinning must be 0 or 1')
+    if 'custom_ops_library' in session:
+        library = session['custom_ops_library']
+        if not isinstance(library, str) or not library or not Path(library).is_file():
+            raise ValueError('custom_ops_library must name an existing shared library')
     required = ('model', 'input_name') + (('boxes_output', 'logits_output') if kind == 'rfdetr' else ('output_name',))
     for key in required:
         if not isinstance(session.get(key), str) or not session[key]:
@@ -175,6 +179,8 @@ def run(config, output, plan_only=False):
     # This is the C++ ORT library actually linked by the binary, specified explicitly.
     runtime = artifact(config['runtime_library'])
     record['runtime_library'] = runtime
+    libraries = sorted({worker['custom_ops_library'] for worker in workers if 'custom_ops_library' in worker})
+    record['custom_ops_libraries'] = [artifact(path) for path in libraries]   # hashed like the model and runtime
     record['mma_evidence'] = require_evidence(config, 'inference', record['model_sha256'], [runtime], record['model_files'])
     atomic_json(output / 'run.json', record)
     if plan_only:

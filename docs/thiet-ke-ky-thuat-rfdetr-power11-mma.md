@@ -678,6 +678,16 @@ Thời gian chờ trong hàng đợi (khoảng 184 ms) chiếm gần 40% độ t
 
 Độ trễ trung vị giảm 119 ms (25%) mà độ mượt và inference không đổi; số frame xử lý giảm 3%, trong nhiễu của cảnh giữa hai lượt (hai lượt live khác nhau, mỗi cấu hình một lượt). Với chính sách bỏ frame cũ nhất của chế độ live, hàng đợi dài hơn một không có lợi.
 
+### 6.2p LayerNorm vector hóa: thiết kế và kiểm tra trên x86 (chưa đo trên Power11)
+
+Nút thắt: `LayerNormalization` của ORT (`ComputeJob<float,float,void>`) chiếm 14–16% chu kỳ (mục 6.2c, 6.2l), lớn nhất trong các phép không phải MMA. Ước lượng sơ bộ từ ORT profile: 24 LayerNorm của backbone, mỗi cái trên `[1300, 384]` (khoảng 0,5 triệu phần tử), mất khoảng 2 ms trên 4 thread, tức khoảng 0,25 tỷ phần tử mỗi giây. Giả thuyết: kernel này không được vector hóa tốt trên Power; chưa đọc được mã nguồn ORT để xác nhận (GitHub trả 404), nên **nguyên nhân chưa biết**.
+
+Thay đổi: `core/src/layernorm.cpp` (kernel hai lượt có hiệu chỉnh trung bình, GCC vector extension) và `core/ops/layernorm_op.cpp` (custom op `com.rfdetr::VsxLayerNorm`, chia hàng qua `KernelContext_ParallelFor` của ORT); `scripts/replace_layernorm.py` viết lại model. Khóa cấu hình `session.custom_ops_library`.
+
+Đã kiểm tra (máy dev x86, ORT 1.32 Python, thư viện biên dịch với header ORT 1.27): 13 độ dài hàng (kể cả đuôi lẻ), trung bình lệch 1000 và −50, hàng hằng số, tại chỗ; so với `LayerNormalization` gốc của ORT trên model giả: khớp ở 2e-5; model RF-DETR thật: 51 nút được thay, 0 bỏ qua, đầu ra chênh tối đa 4,9e-4 (dets) và 7,5e-4 (logit, thang tối đa 8,7), hữu hạn. Biên dịch cho ppc64le bằng clang: vòng lặp sinh `xvaddsp`, `xvsubsp`, `xvmulsp`, `xvmaddasp`, `lxv`, `stxv` (VSX thật). Trên x86 thời gian một frame gần như không đổi (257 so với 251 ms), điều dự kiến vì LayerNorm của ORT trên x86 đã vector hóa; không suy ra gì cho Power.
+
+**Chưa biết:** nó nhanh hơn bao nhiêu trên Power11, và detection sau decode có giữ nguyên không. Cần A/B xen kẽ trên server và gate `compare_detections.py`.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |

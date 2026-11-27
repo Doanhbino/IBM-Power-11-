@@ -11,6 +11,8 @@ struct OrtConfig {
     int height{}, width{}, threads{1};
     // ORT default is spinning on; this core defaults it off to avoid burning shared-LPAR CPU. Sweepable per run.
     bool allow_spinning{false};
+    // Optional custom-op library (e.g. librfdetr_ops.so with com.rfdetr::VsxLayerNorm) registered before the model loads.
+    std::string custom_ops_library;
     // model_type "yolo11": one output [1, 4 + classes, anchors] named output_name; boxes/logits names stay empty.
     std::string model_type{"rfdetr"}, output_name;
     std::size_t classes{};

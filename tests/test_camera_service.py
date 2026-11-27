@@ -205,6 +205,19 @@ class CameraService(unittest.TestCase):
         sources = [s for w in place(config, ROWS, threads=2, smt_limit=1, max_workers=2)['workers'] for s in w['sources']]
         self.assertEqual(sources, [dict(id='cam', source=str(self.video))])
 
+    def test_custom_ops_library_must_exist_and_is_passed_through(self):
+        lib = Path(self.tmp.name) / 'librfdetr_ops.so'
+        lib.write_bytes(b'x')
+        self.session['custom_ops_library'] = str(lib)
+        out = validate_config(self.config(self.worker([0, 1], 0, 'a')), ROWS)
+        self.assertEqual(out[0]['custom_ops_library'], str(lib))
+        self.session['custom_ops_library'] = str(Path(self.tmp.name) / 'missing.so')
+        with self.assertRaises(ValueError):
+            validate_config(self.config(self.worker([0, 1], 0, 'a')), ROWS)
+        self.session['custom_ops_library'] = ''
+        with self.assertRaises(ValueError):
+            validate_config(self.config(self.worker([0, 1], 0, 'a')), ROWS)
+
     def test_worker_plan_preserves_model_keys(self):
         config = self.config(self.worker([], 0, 'a'), self.worker([], 0, 'b', **YOLO))
         planned = place(config, ROWS, threads=2, smt_limit=1, max_workers=4)['workers']

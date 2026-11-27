@@ -138,6 +138,7 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
     ort_config.width = width;
     ort_config.threads = threads;
     ort_config.allow_spinning = integer(cfg, "allow_spinning", 0) == 1;
+    if (!cfg["custom_ops_library"].empty()) ort_config.custom_ops_library = text(cfg, "custom_ops_library");
     ort_config.model_type = model_type;
     rfdetr::Normalization normalization;
     rfdetr::DecodeConfig decode;
