@@ -14,9 +14,11 @@ public:
     int height() const noexcept { return height_; }
     int width() const noexcept { return width_; }
 
-private:
     struct Axis { int lo, hi; float weight; };
+    // Half-pixel sampling table; also used by LetterboxPreprocessor.
     static std::vector<Axis> axis(int source, int target);
+
+private:
     int height_, width_, source_height_{0}, source_width_{0};
     Normalization normalization_;
     std::vector<Axis> ys_, xs_;

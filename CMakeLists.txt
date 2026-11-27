@@ -13,7 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Threads REQUIRED)
 
 add_library(rfdetr_core
-  core/src/preprocess.cpp core/src/decoder.cpp core/src/placement.cpp core/src/gemm.cpp)
+  core/src/preprocess.cpp core/src/decoder.cpp core/src/placement.cpp core/src/gemm.cpp core/src/yolo.cpp)
 target_include_directories(rfdetr_core PUBLIC core/include)
 target_link_libraries(rfdetr_core PUBLIC Threads::Threads)
 target_compile_options(rfdetr_core PRIVATE -Wall -Wextra -Wpedantic -ffp-contract=off)

@@ -46,6 +46,39 @@ class Harness(unittest.TestCase):
         (self.p/'gt.json').write_text(json.dumps(gt))
         self.cli('evaluate_coco.py','--config',self.c,'--annotations',self.p/'gt.json','--images',self.p,'--output-dir',self.p/'accuracy')
         self.assertTrue((self.p/'accuracy/accuracy.json').exists())
+    def _replay(self):
+        import cv2
+        v=cv2.VideoWriter(str(self.p/'replay.avi'),cv2.VideoWriter_fourcc(*'MJPG'),10,(16,16));self.assertTrue(v.isOpened())
+        for _ in range(8):v.write(np.zeros((16,16,3),np.uint8))
+        v.release();return str(self.p/'replay.avi')
+    def _yolo(self,**override):
+        out=np.zeros((1,6,4),np.float32);out[0,:,0]=[8,8,8,8,.9,0]  # one anchor: centred 8x8 box, class 0
+        nodes=[h.make_node('ReduceMean',['images'],['mean'],keepdims=0),h.make_node('Mul',['mean','zero'],['z']),h.make_node('Add',['raw','z'],['output0'])]
+        graph=h.make_graph(nodes,'yolo-fixture',[h.make_tensor_value_info('images',TensorProto.FLOAT,[1,3,16,16])],[h.make_tensor_value_info('output0',TensorProto.FLOAT,[1,6,4])],[numpy_helper.from_array(out,'raw'),numpy_helper.from_array(np.array(0,np.float32),'zero')])
+        m=h.make_model(graph,opset_imports=[h.make_opsetid('',17)]);m.ir_version=9;onnx.save(m,self.p/'yolo.onnx')
+        cfg=dict(model=str(self.p/'yolo.onnx'),mode='camera',source=self._replay(),threads=1,warmup=1,iterations=2,size=[16,16],
+                 model_type='yolo11',output_name='output0',num_classes=2,conf_threshold=.25,iou_threshold=.7,max_det=300)
+        cfg.update(override);self.c.write_text(json.dumps(cfg))
+    def test_default_model_type_is_rfdetr(self):
+        self.c.write_text(json.dumps(dict(self.cfg,mode='camera',source=self._replay())))
+        self.cli('benchmark.py','--config',self.c,'--output',self.p/'camera')
+        self.assertEqual(json.loads((self.p/'camera/result.json').read_text())['model_type'],'rfdetr')
+    def test_yolo11_camera_mode(self):
+        import csv
+        self._yolo();self.cli('benchmark.py','--config',self.c,'--output',self.p/'yolo')
+        r=json.loads((self.p/'yolo/result.json').read_text())
+        self.assertEqual(r['model_type'],'yolo11');self.assertEqual(r['images'],2)
+        rows=list(csv.DictReader((self.p/'yolo/samples.csv').open()))
+        self.assertTrue(rows and all(row['detections']=='1' for row in rows))
+    def test_yolo11_requires_explicit_threshold(self):
+        self._yolo();cfg=json.loads(self.c.read_text());del cfg['iou_threshold'];self.c.write_text(json.dumps(cfg))
+        r=self.cli('benchmark.py','--config',self.c,'--output',self.p/'yolo',code=1)
+        self.assertIn('iou_threshold',r.stderr)
+    def test_yolo11_class_count_mismatch_fails_before_measuring(self):
+        self._yolo(num_classes=3)
+        r=self.cli('benchmark.py','--config',self.c,'--output',self.p/'yolo',code=1)
+        self.assertIn('num_classes=3 expects 7 channels',r.stderr);self.assertIn('model output has 6',r.stderr)
+        self.assertFalse((self.p/'yolo/samples.csv').exists())
     def test_external_hash(self):
         from common import model_files
         m=onnx.load(self.p/'model.onnx');onnx.save_model(m,str(self.p/'external.onnx'),save_as_external_data=True,all_tensors_to_one_file=True,location='weights.bin',size_threshold=0)

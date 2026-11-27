@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from common import model_files, stats
+from common import YOLO_KEYS, model_files, model_type, stats
 from inventory import topology
 from mma_evidence import require_evidence
 from run_record import artifact, atomic_json, identity, public_config, sha256
@@ -26,6 +26,46 @@ def positive_integer(value, label, minimum=1):
     return value
 
 
+# Keys a worker may set itself; they override the shared session so workers can run different models.
+MODEL_KEYS = ('model', 'model_type', 'input_name', 'height', 'width', 'boxes_output', 'logits_output',
+              'background_index', 'top_k', 'threshold', 'mean', 'std', *YOLO_KEYS, 'pad_value')
+
+
+def validate_model_session(session):
+    """Normalized per-worker session; rfdetr and yolo11 each require their own explicit keys."""
+    session = dict(session)
+    kind = session['model_type'] = model_type(session)
+    if kind == 'yolo11':
+        for key in YOLO_KEYS:
+            if key not in session:
+                raise ValueError(f'Explicit {key} required for yolo11')
+    for key in ('height', 'width', 'queue_capacity', 'capture_timeout_ms',
+                'top_k' if kind == 'rfdetr' else 'max_det'):
+        positive_integer(session.get(key), key)
+    positive_integer(session.get('warmup', 10), 'warmup', 0)
+    required = ('model', 'input_name') + (('boxes_output', 'logits_output') if kind == 'rfdetr' else ('output_name',))
+    for key in required:
+        if not isinstance(session.get(key), str) or not session[key]:
+            raise ValueError(f'Explicit {key} required')
+    thresholds = {'duration_s': 0, 'max_frame_age_ms': 0}
+    if kind == 'rfdetr':
+        if 'background_index' not in session or (session['background_index'] is not None and
+                                                 type(session['background_index']) is not int):
+            raise ValueError('Explicit background_index must be null or integer')
+        session['background_index'] = 'none' if session['background_index'] is None else session['background_index']
+        thresholds['threshold'] = .25
+    else:
+        positive_integer(session['num_classes'], 'num_classes')
+        thresholds.update(conf_threshold=None, iou_threshold=None)
+        if 'pad_value' in session and (type(session['pad_value']) is not int or not 0 <= session['pad_value'] <= 255):
+            raise ValueError('pad_value must be an integer in 0..255')
+    for key, default in thresholds.items():
+        value = float(session.get(key, default))
+        if not np.isfinite(value) or value < 0 or (key not in ('duration_s', 'max_frame_age_ms') and value > 1):
+            raise ValueError(f'Invalid {key}')
+    return session
+
+
 def validate_config(config, rows):
     """Return worker configs without inventing masks, node IDs or stream assignments."""
     common = dict(config['session'])
@@ -34,20 +74,6 @@ def validate_config(config, rows):
         raise ValueError('session.mode must be live or replay')
     if mode == 'live' and float(common.get('duration_s', 0)) <= 0:
         raise ValueError('Live service requires duration_s > 0')
-    for key in ('height', 'width', 'top_k', 'queue_capacity', 'capture_timeout_ms'):
-        positive_integer(common[key], key)
-    positive_integer(common.get('warmup', 10), 'warmup', 0)
-    for key in ('model', 'input_name', 'boxes_output', 'logits_output'):
-        if not isinstance(common.get(key), str) or not common[key]:
-            raise ValueError(f'Explicit {key} required')
-    if 'background_index' not in common or (common['background_index'] is not None and
-                                            type(common['background_index']) is not int):
-        raise ValueError('Explicit background_index must be null or integer')
-    common['background_index'] = 'none' if common['background_index'] is None else common['background_index']
-    for key in ('duration_s', 'max_frame_age_ms', 'threshold'):
-        value = float(common.get(key, .25 if key == 'threshold' else 0))
-        if not np.isfinite(value) or value < 0 or (key == 'threshold' and value > 1):
-            raise ValueError(f'Invalid {key}')
     if mode == 'replay' and common.get('max_frame_age_ms', 0):
         raise ValueError('Replay cannot discard frames by age')
     by_cpu = {row['cpu']: row for row in rows}
@@ -81,12 +107,15 @@ def validate_config(config, rows):
             if 'expected_frames' in source:
                 positive_integer(source['expected_frames'], 'expected_frames')
             camera_ids.add(name)
-        cfg = dict(common, cpus=sorted(cpus), threads=threads, sources=sources)
+        session = validate_model_session({**common, **{key: worker[key] for key in MODEL_KEYS if key in worker}})
+        cfg = dict(session, cpus=sorted(cpus), threads=threads, sources=sources)
         if node is not None:
             cfg['numa_node'] = node
         workers.append(cfg)
     if not workers:
         raise ValueError('No workers configured')
+    if len({worker['model'] for worker in workers}) > 1 and (config.get('require_mma') or config.get('mma_evidence')):
+        raise ValueError('MMA evidence is per model: run one model per campaign when require_mma/mma_evidence is set')
     return workers
 
 
@@ -108,13 +137,20 @@ def run(config, output, plan_only=False):
     binary = Path(config['binary']).resolve(strict=True)
     if not os.access(binary, os.X_OK):
         raise ValueError('Camera binary is not executable')
-    model = Path(config['session']['model']).resolve(strict=True)
+    model_paths = [Path(worker['model']).resolve(strict=True) for worker in workers]
+    distinct = sorted(set(model_paths))
+    hashes = {path: (sha256(path), model_files(path)) for path in distinct}
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     record = {**identity('camera'), 'status': 'planned' if plan_only else 'running',
               'machine': platform.machine(),
-              'config': public_config(config), 'model_files': model_files(model),
-              'model_sha256': sha256(model), 'worker_binary': artifact(binary),
+              'config': public_config(config),
+              'models': [{'worker': index, 'model_type': worker['model_type'], 'path': str(path),
+                          'sha256': hashes[path][0]}
+                         for index, (worker, path) in enumerate(zip(workers, model_paths))],
+              'model_files': hashes[distinct[0]][1] if len(distinct) == 1 else None,
+              'model_sha256': hashes[distinct[0]][0] if len(distinct) == 1 else None,
+              'worker_binary': artifact(binary),
               'profile_instrumented': bool(config['session'].get('profile', 0))}
     record['source_files'] = {source['id']: artifact(source['source']) for worker in workers
                               for source in worker['sources'] if '://' not in source['source'] and Path(source['source']).is_file()}
@@ -130,7 +166,7 @@ def run(config, output, plan_only=False):
     try:
         for index, cfg in enumerate(workers):
             target = output / f'worker-{index:02d}'
-            cfg = dict(cfg, model=str(model), output=str(target))
+            cfg = dict(cfg, model=str(model_paths[index]), output=str(target))
             path = output / f'.worker-{index:02d}.private.json'
             # Source credentials are visible only in a mode-0600 ephemeral worker config.
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

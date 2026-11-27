@@ -9,11 +9,19 @@ namespace rfdetr {
 struct OrtConfig {
     std::string model, input_name, boxes_name, logits_name, profile_prefix;
     int height{}, width{}, threads{1};
+    // model_type "yolo11": one output [1, 4 + classes, anchors] named output_name; boxes/logits names stay empty.
+    std::string model_type{"rfdetr"}, output_name;
+    std::size_t classes{};
 };
 struct OutputView {
     const float* boxes;
     const float* logits;
     std::size_t queries, classes;
+};
+
+struct YoloOutputView {
+    const float* data;
+    std::size_t channels, anchors;
 };
 
 // CPU-only ORT session; uses the linked MLAS binary without replacing its backend.
@@ -23,7 +31,8 @@ public:
     ~OrtSession();
     OrtSession(const OrtSession&) = delete;
     OrtSession& operator=(const OrtSession&) = delete;
-    OutputView run(const float* nchw, std::size_t elements);
+    OutputView run(const float* nchw, std::size_t elements);           // model_type rfdetr only
+    YoloOutputView run_yolo(const float* nchw, std::size_t elements);  // model_type yolo11 only
     std::string end_profile();
     static std::string version();
     static std::string library_path();

@@ -3,8 +3,12 @@
 #include "rfdetr/gemm.hpp"
 #include "rfdetr/preprocess.hpp"
 #include "rfdetr/placement.hpp"
+#include "rfdetr/yolo.hpp"
+#include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
 #include <future>
 #include <iostream>
 #include <limits>
@@ -53,6 +57,54 @@ void adapter() {
     throws([&] { decoder.run(boxes, logits, 1, 3, 100, 200); });
     throws([] { rfdetr::Decoder invalid({std::nullopt, 0, .5f}); });
 }
+void memory_binding() {
+    // The kernel reads maxnode-1 bits, so binding to a real node must work (regression: node+1 gave EINVAL).
+    if (!std::filesystem::exists("/sys/devices/system/node/node0")) return;
+    try { rfdetr::bind_memory(0); }
+    catch (const std::system_error& error) {
+        if (error.code().value() != EPERM && error.code().value() != ENOSYS) throw;  // sandbox forbids the syscall
+    }
+    throws([] { rfdetr::bind_memory(-1); });
+}
+void yolo() {
+    // 1x1 blue pixel (BGR) into 4x4: scale 4, no padding, RGB planes 0,0,1.
+    std::uint8_t pixel[]{255, 0, 0};
+    rfdetr::LetterboxPreprocessor tiny(4, 4);
+    const auto& blue = tiny.run({pixel, 1, 1, 3});
+    require(tiny.meta().scale == 4.f && tiny.meta().pad_x == 0 && tiny.meta().pad_y == 0, "1x1 letterbox meta");
+    require(blue.size() == 48 && blue[0] == 0.f && blue[16] == 0.f && blue[32] == 1.f, "1x1 letterbox RGB planes");
+    // 2x4 white image into 8x8: scale 2, content rows 2..5, pad value 114/255 elsewhere.
+    std::vector<std::uint8_t> white(2 * 4 * 3, 255);
+    rfdetr::LetterboxPreprocessor wide(8, 8);
+    const auto& canvas = wide.run({white.data(), 2, 4, 12});
+    require(wide.meta().scale == 2.f && wide.meta().pad_x == 0 && wide.meta().pad_y == 2, "wide letterbox meta");
+    require(canvas[0] == 114.f / 255.f && canvas[2 * 8] == 1.f && canvas[6 * 8] == 114.f / 255.f, "wide letterbox rows");
+    throws([&] { wide.run({white.data(), 2, 4, 5}); });
+    throws([] { rfdetr::LetterboxPreprocessor invalid(0, 4); });
+
+    // Layout is [channel][anchor]: cx, cy, w, h, score(class0), score(class1).
+    const float out[]{50, 50, 50,  50, 50, 50,  20, 20, 20,  20, 20, 20,  .9f, .8f, 0,  0, 0, .7f};
+    const rfdetr::LetterboxMeta identity{1.f, 0, 0, 100, 100};
+    rfdetr::YoloDecoder decoder({2, .25f, .5f, 300});
+    const auto& d = decoder.run(out, 6, 3, identity);
+    require(d.size() == 2, "Per-class NMS keeps the other class and drops the duplicate");
+    require(d[0].class_slot == 0 && d[0].query == 0 && std::abs(d[0].score - .9f) < 1e-6f, "Best detection");
+    require(d[0].xyxy == std::array<float, 4>({40, 40, 60, 60}), "cxcywh to xyxy");
+    require(d[1].class_slot == 1 && d[1].query == 2, "Other class survives");
+    const float edge[]{95, 95, 20, 20, .9f, 0};
+    const auto& clipped = decoder.run(edge, 6, 1, identity);
+    require(clipped.size() == 1 && clipped[0].xyxy == std::array<float, 4>({85, 85, 100, 100}), "Clip to frame");
+    const float inner[]{60, 70, 20, 10, .9f, 0};  // model-space xyxy = 50,65,70,75
+    const auto& mapped = decoder.run(inner, 6, 1, {.5f, 10, 20, 200, 200});
+    require(mapped.size() == 1 && mapped[0].xyxy == std::array<float, 4>({80, 90, 120, 110}), "Undo letterbox scale and padding");
+    float bad[18]; std::copy(out, out + 18, bad);
+    throws([&] { decoder.run(out, 7, 3, identity); });
+    bad[12] = std::numeric_limits<float>::quiet_NaN();
+    throws([&] { decoder.run(bad, 6, 3, identity); });
+    throws([] { rfdetr::YoloDecoder invalid({2, 1.5f, .5f, 300}); });
+    throws([] { rfdetr::YoloDecoder invalid({0, .25f, .5f, 300}); });
+    throws([] { rfdetr::YoloDecoder invalid({2, .25f, .5f, 0}); });
+}
 void gemm(rfdetr::GemmBackend backend) {
     for (std::size_t m : {1, 3, 4, 5, 9}) for (std::size_t n : {1, 3, 4, 7})
         for (std::size_t k : {1, 2, 5, 17}) for (bool transposed : {false, true}) {
@@ -92,9 +144,10 @@ void shared_rhs(rfdetr::GemmBackend backend) {
 
 int main() {
     try {
-        queues(); adapter(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
+        queues(); adapter(); yolo(); gemm(rfdetr::GemmBackend::reference); shared_rhs(rfdetr::GemmBackend::reference);
         require(!rfdetr::allowed_cpus().empty(), "Empty effective cpuset");
         throws([] { rfdetr::bind_cpus({-1}); });
+        memory_binding();
         const auto capability = rfdetr::mma_capability();
         if (capability.compiled && capability.exposed) {
             gemm(rfdetr::GemmBackend::mma); shared_rhs(rfdetr::GemmBackend::mma);

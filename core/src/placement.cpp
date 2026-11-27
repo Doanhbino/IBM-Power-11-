@@ -65,9 +65,12 @@ void bind_memory(int node) {
     if (node < 0 || node > 65535) throw std::invalid_argument("Invalid NUMA node");
 #ifdef __linux__
     constexpr auto bits = sizeof(unsigned long) * 8;
-    std::vector<unsigned long> mask(static_cast<std::size_t>(node) / bits + 1, 0);
+    // The kernel reads maxnode-1 bits (libnuma also passes size+1), so node N needs maxnode = N + 2,
+    // and the mask must be long enough for that many bits.
+    const auto maxnode = static_cast<unsigned long>(node) + 2;
+    std::vector<unsigned long> mask(maxnode / bits + 1, 0);
     mask[node / bits] |= 1UL << (node % bits);
-    if (syscall(SYS_set_mempolicy, MPOL_BIND, mask.data(), static_cast<unsigned long>(node + 1)))
+    if (syscall(SYS_set_mempolicy, MPOL_BIND, mask.data(), maxnode))
         throw std::system_error(errno, std::generic_category(), "set_mempolicy MPOL_BIND");
 #else
     throw std::runtime_error("NUMA memory policy requires Linux");

@@ -4,6 +4,7 @@
 #include "rfdetr/ort_session.hpp"
 #include "rfdetr/placement.hpp"
 #include "rfdetr/preprocess.hpp"
+#include "rfdetr/yolo.hpp"
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
 #include <atomic>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -34,6 +36,45 @@ std::string text(const cv::FileNode& node, const char* key) {
     if (!node[key].isString()) throw std::invalid_argument(std::string("Expected string: ") + key);
     return static_cast<std::string>(node[key]);
 }
+
+float number(const cv::FileNode& node, const char* key) {
+    if (!node[key].isReal() && !node[key].isInt()) throw std::invalid_argument(std::string("Explicit number required: ") + key);
+    return static_cast<float>(static_cast<double>(node[key]));
+}
+
+// One model's preprocess -> infer -> postprocess, so the worker loop is model-agnostic and keeps three timed stages.
+struct ModelPath {
+    explicit ModelPath(const rfdetr::OrtConfig& config) : ort(config) {}
+    virtual ~ModelPath() = default;
+    virtual const std::vector<float>& preprocess(rfdetr::ImageView image) = 0;
+    virtual void infer(const float* tensor, std::size_t elements) = 0;
+    virtual const std::vector<rfdetr::Detection>& postprocess(int source_height, int source_width) = 0;
+    rfdetr::OrtSession ort;
+};
+struct RfdetrPath final : ModelPath {
+    RfdetrPath(const rfdetr::OrtConfig& config, rfdetr::Normalization normalization, rfdetr::DecodeConfig decode)
+        : ModelPath(config), pre(config.height, config.width, normalization), decoder(decode) {}
+    const std::vector<float>& preprocess(rfdetr::ImageView image) override { return pre.run(image); }
+    void infer(const float* tensor, std::size_t elements) override { out = ort.run(tensor, elements); }
+    const std::vector<rfdetr::Detection>& postprocess(int height, int width) override {
+        return decoder.run(out.boxes, out.logits, out.queries, out.classes, height, width);
+    }
+    rfdetr::Preprocessor pre;
+    rfdetr::Decoder decoder;
+    rfdetr::OutputView out{};
+};
+struct YoloPath final : ModelPath {
+    YoloPath(const rfdetr::OrtConfig& config, std::uint8_t pad_value, rfdetr::YoloConfig yolo)
+        : ModelPath(config), pre(config.height, config.width, pad_value), decoder(yolo) {}
+    const std::vector<float>& preprocess(rfdetr::ImageView image) override { return pre.run(image); }
+    void infer(const float* tensor, std::size_t elements) override { out = ort.run_yolo(tensor, elements); }
+    const std::vector<rfdetr::Detection>& postprocess(int, int) override {
+        return decoder.run(out.data, out.channels, out.anchors, pre.meta());
+    }
+    rfdetr::LetterboxPreprocessor pre;
+    rfdetr::YoloDecoder decoder;
+    rfdetr::YoloOutputView out{};
+};
 
 struct Frame {
     cv::Mat image;
@@ -76,29 +117,54 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
     if (static_cast<std::size_t>(threads) > rfdetr::allowed_cpus().size())
         throw std::invalid_argument("ORT threads exceed effective CPU mask");
     cv::setNumThreads(1);
-    rfdetr::Normalization normalization;
-    for (const auto key : {"mean", "std"}) if (!cfg[key].empty()) {
-        if (!cfg[key].isSeq() || cfg[key].size() != 3) throw std::invalid_argument("Expected 3 normalization values");
-        auto& values = std::string(key) == "mean" ? normalization.mean : normalization.std;
-        for (int i = 0; i < 3; ++i) values[i] = static_cast<float>(cfg[key][i]);
-    }
-    rfdetr::Preprocessor preprocessor(height, width, normalization);
-    rfdetr::DecodeConfig decode;
-    if (cfg["background_index"].isInt()) decode.background_index = static_cast<int>(cfg["background_index"]);
-    else if (!cfg["background_index"].isString() || text(cfg, "background_index") != "none")
-        throw std::invalid_argument("Set background_index explicitly to integer or string none");
-    decode.top_k = integer(cfg, "top_k", 300, 1);
-    if (!cfg["threshold"].empty()) decode.threshold = static_cast<float>(cfg["threshold"]);
-    rfdetr::Decoder decoder(decode);
+    const std::string model_type = cfg["model_type"].empty() ? std::string("rfdetr") : text(cfg, "model_type");
+    if (model_type != "rfdetr" && model_type != "yolo11") throw std::invalid_argument("model_type must be rfdetr or yolo11");
     const bool profiling = integer(cfg, "profile", 0) == 1;
+    rfdetr::OrtConfig ort_config;
+    ort_config.model = text(cfg, "model");
+    ort_config.input_name = text(cfg, "input_name");
+    ort_config.profile_prefix = profiling ? (out / "ort").string() : "";
+    ort_config.height = height;
+    ort_config.width = width;
+    ort_config.threads = threads;
+    ort_config.model_type = model_type;
+    rfdetr::Normalization normalization;
+    rfdetr::DecodeConfig decode;
+    rfdetr::YoloConfig yolo{};
+    std::uint8_t pad_value = 114;
+    if (model_type == "rfdetr") {
+        ort_config.boxes_name = text(cfg, "boxes_output");
+        ort_config.logits_name = text(cfg, "logits_output");
+        for (const auto key : {"mean", "std"}) if (!cfg[key].empty()) {
+            if (!cfg[key].isSeq() || cfg[key].size() != 3) throw std::invalid_argument("Expected 3 normalization values");
+            auto& values = std::string(key) == "mean" ? normalization.mean : normalization.std;
+            for (int i = 0; i < 3; ++i) values[i] = static_cast<float>(cfg[key][i]);
+        }
+        if (cfg["background_index"].isInt()) decode.background_index = static_cast<int>(cfg["background_index"]);
+        else if (!cfg["background_index"].isString() || text(cfg, "background_index") != "none")
+            throw std::invalid_argument("Set background_index explicitly to integer or string none");
+        decode.top_k = integer(cfg, "top_k", 300, 1);
+        if (!cfg["threshold"].empty()) decode.threshold = static_cast<float>(cfg["threshold"]);
+    } else {
+        ort_config.output_name = text(cfg, "output_name");
+        if (cfg["num_classes"].empty() || cfg["max_det"].empty())
+            throw std::invalid_argument("Explicit num_classes and max_det required for yolo11");
+        yolo = rfdetr::YoloConfig{static_cast<std::size_t>(integer(cfg, "num_classes", 0, 1)), number(cfg, "conf_threshold"),
+                                  number(cfg, "iou_threshold"), static_cast<std::size_t>(integer(cfg, "max_det", 0, 1))};
+        ort_config.classes = yolo.classes;
+        const int pad = integer(cfg, "pad_value", 114, 0);
+        if (pad > 255) throw std::invalid_argument("Invalid range: pad_value");
+        pad_value = static_cast<std::uint8_t>(pad);
+    }
     const auto init_start = Clock::now();
-    rfdetr::OrtSession session({text(cfg, "model"), text(cfg, "input_name"), text(cfg, "boxes_output"),
-        text(cfg, "logits_output"), profiling ? (out / "ort").string() : "", height, width, threads});
+    std::unique_ptr<ModelPath> model;
+    if (model_type == "rfdetr") model = std::make_unique<RfdetrPath>(ort_config, normalization, decode);
+    else model = std::make_unique<YoloPath>(ort_config, pad_value, yolo);
     const double init_ms = ms(Clock::now() - init_start);
     cv::Mat black(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
-    const auto& tensor = preprocessor.run({black.data, black.rows, black.cols, black.step});
+    const auto& tensor = model->preprocess({black.data, black.rows, black.cols, black.step});
     const auto warm_start = Clock::now();
-    for (int i = 0; i < integer(cfg, "warmup", 10); ++i) session.run(tensor.data(), tensor.size());
+    for (int i = 0; i < integer(cfg, "warmup", 10); ++i) model->infer(tensor.data(), tensor.size());
     const double warmup_ms = ms(Clock::now() - warm_start);
     const int capacity = integer(cfg, "queue_capacity", 2, 1);
     const int timeout = integer(cfg, "capture_timeout_ms", 5000, 1);
@@ -198,12 +264,11 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
                 const auto begin = Clock::now();
                 const double age = ms(begin - frame->received);
                 if (max_age > 0 && age > max_age) { ++camera.expired; break; }
-                const auto& data = preprocessor.run({frame->image.data, frame->image.rows, frame->image.cols, frame->image.step});
+                const auto& data = model->preprocess({frame->image.data, frame->image.rows, frame->image.cols, frame->image.step});
                 const auto pre_end = Clock::now();
-                const auto output = session.run(data.data(), data.size());
+                model->infer(data.data(), data.size());
                 const auto inf_end = Clock::now();
-                const auto& decoded = decoder.run(output.boxes, output.logits, output.queries, output.classes,
-                    frame->image.rows, frame->image.cols);
+                const auto& decoded = model->postprocess(frame->image.rows, frame->image.cols);
                 const auto end = Clock::now(); last_completed = end;
                 ++camera.processed;
                 samples << camera.id << ',' << frame->id << ',' << frame->pts_ms << ',' << stamp(frame->received) << ',' << stamp(end)
@@ -235,12 +300,13 @@ int rfdetr::run_camera_worker(const std::filesystem::path& config_path,
     cv::FileStorage result((out / "result.json").string(), cv::FileStorage::WRITE | cv::FileStorage::FORMAT_JSON);
     result << "schema_version" << 1 << "status" << (failed ? "failed" : interrupted ? "interrupted" : "ok")
         << "backend" << "ORT CPU / linked MLAS; MMA usage requires independent hot-path evidence"
+        << "model_type" << model_type << "input_height" << height << "input_width" << width
         << "ort_version" << rfdetr::OrtSession::version() << "runtime_library" << rfdetr::OrtSession::library_path()
         << "session_init_ms" << init_ms
         << "warmup_ms" << warmup_ms << "profile_instrumented" << static_cast<int>(profiling)
         << "active_start_monotonic_s" << stamp(started) << "active_end_monotonic_s" << stamp(last_completed)
         << "active_elapsed_s" << active_s << "shutdown_ms" << ms(Clock::now() - last_completed)
-        << "profile_path" << session.end_profile() << "cameras" << "[";
+        << "profile_path" << model->ort.end_profile() << "cameras" << "[";
     std::size_t processed = 0;
     for (const auto& camera : cameras) {
         const auto state = camera->queue.stats();

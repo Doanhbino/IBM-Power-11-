@@ -6,7 +6,7 @@ import json
 import time
 from pathlib import Path
 import numpy as np
-from common import session, preprocess_bgr, decode, manifest, stats, write_json, sha256
+from common import session, adapter_for, model_type, check_yolo_channels, manifest, stats, write_json, sha256
 from run_record import identity, runtime_binaries, artifact
 from mma_evidence import require_evidence
 
@@ -29,7 +29,8 @@ def run(cfg, out):
 def _run(cfg, out, record):
     if int(cfg.get('iterations',100)) < 1 or int(cfg.get('warmup',10)) < 0: raise ValueError('Invalid iterations/warmup')
     cfg=dict(cfg); cfg['profile_prefix']=str(out/'ort')
-    result={**manifest(cfg), **record}
+    adapter=adapter_for(cfg)
+    result={**manifest(cfg), **record, 'model_type':model_type(cfg)}
     if cfg.get('backend','cpu') == 'cpu':
         import onnxruntime
         result['runtime_binaries'] = runtime_binaries(onnxruntime)
@@ -44,6 +45,10 @@ def _run(cfg, out, record):
     result['ort_build_info']=__import__('onnxruntime').get_build_info() if cfg.get('backend')!='tensorrt_native' else None
     if cfg.get('backend')=='tensorrt_native': result['tensorrt_version']=__import__('tensorrt').__version__
     inp=s.get_inputs()[0]; names=[x.name for x in s.get_outputs()]
+    if model_type(cfg)=='yolo11':
+        if cfg['output_name'] not in names: raise ValueError(f"output_name {cfg['output_name']!r} not in model outputs {names}")
+        channels=s.get_outputs()[names.index(cfg['output_name'])].shape[1]
+        if isinstance(channels,int): check_yolo_channels(channels,int(cfg['num_classes']))
     mode=cfg.get('mode','model'); cap=None
     if mode=='model':
         with np.load(cfg['input_npz'],allow_pickle=False) as z:
@@ -81,14 +86,14 @@ def _run(cfg, out, record):
             if not ok: return None
             frame_index+=1
             frame_pts_ms=float(cap.get(cv2.CAP_PROP_POS_MSEC))
-            x=preprocess_bgr(frame,h,w,cfg.get('mean',(.485,.456,.406)),cfg.get('std',(.229,.224,.225)))
+            x,meta=adapter.preprocess(frame,h,w,cfg)
             pre_end=time.perf_counter_ns()
         if inp.type not in expected or x.dtype!=expected[inp.type]: raise ValueError(f'Dtype mismatch: {inp.type} versus {x.dtype}; no implicit cast')
         if len(inp.shape)!=x.ndim or any(isinstance(d,int) and d!=a for d,a in zip(inp.shape,x.shape)): raise ValueError('Input shape differs from export')
         inf_begin=time.perf_counter_ns(); y=s.run(None,{inp.name:x}); inf_end=time.perf_counter_ns()
         n=0
         if cap is not None:
-            boxes,scores,classes=decode(dict(zip(names,y)),cfg,frame.shape[:2]); n=len(scores)
+            boxes,scores,classes=adapter.decode(dict(zip(names,y)),cfg,frame.shape[:2],meta); n=len(scores)
         end=time.perf_counter_ns()
         return {'capture_ms':(read_end-begin)/1e6,'preprocess_ms':(pre_end-read_end)/1e6,
                 'inference_ms':(inf_end-inf_begin)/1e6,'postprocess_ms':(end-inf_end)/1e6,
