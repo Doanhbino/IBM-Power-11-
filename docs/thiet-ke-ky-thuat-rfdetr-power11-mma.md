@@ -469,6 +469,21 @@ FPS từng lượt S1: 4,25 / 3,62 / 4,34 (suy ra lượt 02 từ trung bình); 
 
 **Correctness đã kiểm [ĐC]:** `compare_detections.py` giữa `01-S0` và `02-S1`: 400 frame so sánh, 400 frame khớp hoàn toàn, 5765 detection ghép được, `only_reference=0`, `only_candidate=0`, IoU nhỏ nhất 1,0, chênh score lớn nhất 0,0. Đầu ra giống hệt từng bit ở mức detection sau decode (chưa so tensor thô). **Chưa kiểm:** (b) cơ chế (phân bố chu kỳ theo thread với `allow_spinning=1`); (c) trên live RTSP với `capture_cpus`; (d) số thread tối ưu khi bật spinning (kết quả sweep 2/4/6/8 ở mục 6.2d là với spinning tắt).
 
+### 6.2g Hai worker đồng thời, `allow_spinning` 0 và 1 ([ĐC], `runs/ab-multi1`)
+
+Replay clip 400 frame, mỗi worker một camera (hai camera cùng clip), mỗi worker 4 thread trên một NUMA node riêng (node 0 và node 1), 6 lượt xen kẽ (M0,M1,M1,M0,M0,M1), mỗi lượt 800 mẫu. FPS là tổng throughput của hai worker (`throughput_active_fps`, tính trên cửa sổ từ lúc worker đầu bắt đầu đến lúc worker cuối kết thúc). Load average trong lúc chạy 4,4 đến 14,6.
+
+| | Tổng FPS | Inference p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|
+| `allow_spinning=0` (M0) | 5,10 ± 0,14 | 398,1 ± 5,0 | 477,5 ± 6,3 | 522,7 ± 10,8 |
+| `allow_spinning=1` (M1) | **8,45 ± 0,09** | **220,1 ± 1,5** | **235,2 ± 14,0** | **250,7 ± 16,8** |
+| Thay đổi | **+66%** | −45% | −51% | −52% |
+
+- **Spinning vẫn có lợi rõ rệt với 2 worker (8 thread quay vòng):** vượt xa nhiễu (độ lệch dưới 3% ở cả hai nhánh). Giả thuyết "spinning có thể làm hỏng throughput khi nhiều worker tranh core" **không đúng ở 2 worker** trên LPAR này.
+- **Scale từ 1 lên 2 worker:** tắt spinning 5,10 so với 2,94 FPS của một worker (khoảng 1,73 lần, hiệu suất khoảng 87%); bật spinning 8,45 so với 4,07 FPS của một worker (khoảng 2,08 lần). Con số 2,08 vượt 2 do một worker bật spinning đo trước đó dao động mạnh (3,62 đến 4,34) và đo ở phiên khác; không nên đọc là siêu tuyến tính. Cùng phiên thì mỗi worker đạt khoảng 4,2 FPS.
+- **Chưa biết điểm bão hòa.** 2 worker × 4 thread = 8 thread quay vòng, chưa chạm giới hạn pool khoảng 15 core. Với 4 worker (16 thread) vượt pool.
+- **Cái giá:** load average đạt 14,6 khi spinning, trên LPAR shared uncapped (entitlement 14,5). Tác động lên các phân vùng khác chưa đo.
+
 ### 6.3 Hạng mục phân tích ứng với từng hotspot
 
 | Chủ đề | Cách đo | Khi nào hành động |
